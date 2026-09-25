@@ -2,7 +2,7 @@
 
 **Project**: Flopstar, an agent for FLOP Labs' Close Call contest (`close-1`) on technocore.chat
 **Repository**: https://github.com/subloop-xyz/flopstar (private)
-**Written**: 25 September 2026, 15:40 UTC
+**Written**: 25 September 2026, 15:40 UTC (room claim added 15:50 UTC)
 **Current host**: `hoodwatch` (167.99.238.68), shared with other services and to be decommissioned for Flopstar
 **Target**: a new droplet running only Flopstar
 
@@ -18,7 +18,7 @@ mistake can't be undone.
 | Referee monitor | **Running on hoodwatch**, started by hand (not systemd); logs to `data/monitor.log`. Fully synced to sweep 37, no gaps, every record signature-verified. |
 | Flopstar owner key | Verified: `uv run flopstar verify-key` printed MATCH for `did:key:z6MkjLpUAGLtNieLnCFQoUScwJxAKwo5PHZcHRsdyiCJG5Bv`. |
 | Flopstar close-1 registration | **Posted** in `close1`, seq 548523, 15:14:12 UTC. The exact record is saved in `data/registration-close1.jsonl`. The mint can't be confirmed by name, because flow posts are truncated. |
-| Own room `d-flopstar-close1` | **NOT CLAIMED YET.** No owner note, no messages. Claim it first (§4). |
+| Own room `d-flopstar-close1` | **Claimed by Flopstar at 15:42:31 UTC on 25 Sep** (room-nonce `1790350948933`). No messages yet, not registered in `close1`, not listed by the referee. **The claim must be rewritten by 2 Oct 15:42 UTC** (7-day expiry, §4). |
 | Key tree | Designed and dry-run only (`docs/TREE.md`). The master seed exists; no tree key is registered, allow-listed or trading. The live trader is **not built**. |
 | systemd units | Drafted in `deploy/`, never installed anywhere. |
 | Secrets hook | Enabled on hoodwatch (`core.hooksPath=.githooks`). It is per-clone, so enable it again on the droplet. |
@@ -155,7 +155,7 @@ pkill -f "flopstar monitor"
 systemctl enable --now flopstar-monitor.service
 journalctl -u flopstar-monitor -f                   # expect "Synced ..." then long-polling
 ```
-Enable the timers **only after the room is claimed** (§4):
+Enable the timers **as soon as the first heartbeat is posted** (§4), and within 12 hours of it:
 ```bash
 systemctl enable --now flopstar-heartbeat.timer flopstar-reclaim.timer
 ```
@@ -173,24 +173,37 @@ replaces it for the droplet move.
 
 ---
 
-## 4. Own room `d-flopstar-close1`: do this first once the key is on the droplet
+## 4. Own room `d-flopstar-close1`: claimed; finish setup on the droplet
 
 We trade in our own `d-` room because `close1` keeps only about 6 minutes of history, and a
 message only counts if the referee reads it before it drops out. The referee has stalled for
 13+ minutes before. A `d-` room can be claimed **only before its first message**, and a lost
 claim can never be retaken.
 
+**Claim: done.** Flopstar claimed the room from hoodwatch at 15:42:31 UTC on 25 September 2026.
+`room status` shows `owner note: did:key:z6MkjLp… (Flopstar)`. **Don't run `claim` again**: it
+would stop with "already has an owner note". What's left is posting the first message,
+registering the room, and turning on the keepalive, all in one sitting on the droplet.
+The first heartbeat starts a 12-hour clock: a room with only one message is deleted after 12
+hours, so the heartbeat timer has to be running by then.
+
 Run on the droplet as `flopstar`, with the key path set. Each command is a dry run without `--post`.
 ```bash
 cd /opt/flopstar
 export FLOPSTAR_KEY_PATH=/etc/flopstar/keys/flopstar.pem FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
-sudo -E -u flopstar .venv/bin/flopstar room claim --post       # must print OWNED BY FLOPSTAR
-sudo -E -u flopstar .venv/bin/flopstar room heartbeat --post   # first message, only after the claim
+sudo -E -u flopstar .venv/bin/flopstar room status             # owner must be Flopstar before going on
+sudo -E -u flopstar .venv/bin/flopstar room heartbeat --post   # first message in the room
 sudo -E -u flopstar .venv/bin/flopstar room register --post    # {"t":"room",...} in close1; saves evidence
 sudo -E -u flopstar .venv/bin/flopstar room status             # "listed by referee: sweep N" once listed
 ```
-If `claim` doesn't print `OWNED BY FLOPSTAR`, **stop**. Someone else holds the name, and the
-room name in `config.OWN_ROOM` has to change before anything else happens.
+Then enable the timers straight away (§3.9). If `room status` doesn't show Flopstar as the
+owner, **stop**: the claim has lapsed or been taken, so post nothing in the room.
+
+**Claim deadline.** The owner note was last written at 15:42 UTC on 25 September, and a note
+with no write for 7 days is deleted. So it must be rewritten by **2 October 15:42 UTC**.
+- **On the droplet:** `flopstar-reclaim.timer` takes over once enabled.
+- **If the droplet isn't running by 1 October:** run `uv run flopstar room reclaim --post`
+  on hoodwatch (it prompts for the passphrase), and check that `room status` still shows the owner.
 
 **Keepalive.**
 - **Why:** notes and rooms with no write for 7 days are deleted, and a room with a single message
@@ -301,7 +314,7 @@ Checks: `uv run pytest -q` (14 tests), `uv run ruff check`, and `python3 vendor/
 
 ## 8. Next work, in order
 
-1. **Droplet move** (§3) and **room claim** (§4).
+1. **Droplet move** (§3), then **room heartbeat → register → timers** (§4). The claim is done; rewrite it by 2 Oct 15:42 UTC.
 2. **Wait for the referee to list the room** (`room status`).
 3. **Build the live trader,** per `docs/TREE.md` "Still to build":
    - Hyperliquid price reader;
@@ -342,7 +355,8 @@ SELECT json_extract(json_extract(raw_json, '$.text'), '$.t') AS t, COUNT(*) FROM
   the referee key changed. Check for a signed close-1 launch record.
 - **429:** the client waits for the time the server names. Check that nothing else on the droplet
   hits technocore.chat.
-- **`claim` returns 409 / not ours:** someone else holds the name. Don't post anything in it.
+- **`room status` owner isn't Flopstar:** the claim has lapsed or been taken. Don't post anything in the room.
+- **Note reads start with "!! UNTRUSTED CONTENT":** that banner is normal; `parse_note_body` strips it.
 - **The hook didn't run on a commit:** run `git config core.hooksPath .githooks` in that clone.
 
 **Security checklist (droplet)**
