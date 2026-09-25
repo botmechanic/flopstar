@@ -374,7 +374,7 @@ Checks: `uv run pytest -q` (25 tests), `uv run ruff check`, and `python3 vendor/
 
 ## 8. Next work, in order
 
-1. **Watch round 1.** The first 3% move from 225.18 (≥ 232.94 or ≤ 218.42) is the first flip on
+1. **Watch round 1.** The first 3% move from 225.18 (≥ 231.94 or ≤ 218.42) is the first flip on
    real prices: a close in one sweep, a reopen in the next. Check both settle.
 2. **Alerts.** A tripped kill switch only logs and writes `data/KILL`; add a push notification.
 3. **After the lock:** Flopstar signs a statement listing all 64 tree DIDs, in its room and here.
