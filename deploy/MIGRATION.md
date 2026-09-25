@@ -27,6 +27,7 @@ A compromise of any root service is a compromise of the key, before and after th
     cd /opt/flopstar && UV_LINK_MODE=copy UV_PYTHON=/usr/bin/python3.12 /root/.local/bin/uv sync --frozen
       # run as root because uv lives under /root; copy mode so the venv holds no hardlinks
       # into /root's uv cache before the chown below
+    git -C /opt/flopstar config core.hooksPath .githooks   # hooksPath is per-clone, not versioned
     chown -R flopstar:flopstar /opt/flopstar
 
 ## 3. Key: move, not copy (one copy on the box)
