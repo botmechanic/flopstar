@@ -104,12 +104,22 @@ The full per-sweep record is in the **flow file** referenced by the hash, which 
 src/flopstar/
 ├── __init__.py       - Package metadata
 ├── cli.py            - Command-line entry point
-├── config.py         - Contest configuration and paths
+├── config.py         - Referee DID, rooms, own room, paths
 ├── didkey.py         - DID:key ↔ Ed25519 conversion, signature verification
-├── monitor.py        - Read-only monitor loop
+├── technocore.py     - technocore.chat client: reads, long-poll, export, signed posts and notes
 ├── store.py          - Append-only SQLite message store
-└── technocore.py     - technocore.chat API client
+├── monitor.py        - Read-only referee monitor loop
+├── signer.py         - Encrypted key loading, DID derivation, PolicySigner
+├── register.py       - Flopstar's close-1 owner registration
+├── room.py           - Own room: status | verify | claim | register | heartbeat | reclaim
+├── evidence.py       - Saves our exact signed records from the room export
+├── tree.py           - Key tree: HKDF derivation, sizing, round/split engine
+├── dryrun.py         - Tree run against the vendored fold over simulated paths
+└── treecli.py        - Tree commands: init | dids | dryrun
 ```
+
+Other directories: `deploy/` (systemd units and timers), `docs/` (`HANDOFF.md` for current state
+and next steps, `TREE.md` for the key tree design) and `vendor/close-call/` (the challenge package).
 
 ### Key Design Decisions
 
@@ -118,6 +128,11 @@ src/flopstar/
 3. **Gap detection**: Automatically fills sequence gaps using export API
 4. **Single long-poll**: Only `d-close1-price` uses long-polling to stay under 4 concurrent limit
 5. **Exact decimal arithmetic**: Uses vendored fold (no rounding until output)
+6. **Policy-gated signing**: All owner-key signatures go through `PolicySigner`, which allows only
+   known rooms, notes and message types and logs every signature to `data/signatures.log`
+7. **Flat main key**: The Flopstar key holds the identity and owns the room but never trades;
+   trading is planned for a 64-key tree (`docs/TREE.md`), which is not live yet
+8. **Dry run by default**: Signing commands only post with `--post`
 
 ## Vendored Code
 
