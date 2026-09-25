@@ -1,626 +1,356 @@
-# Flopstar Deployment Handoff
+# Flopstar Handoff: moving to a dedicated droplet
 
-**Project**: Flopstar - Technocore Close Call Contest Agent
-**Status**: Phase 3 Complete (Read-only Monitor)
-**Date**: September 25, 2026
-**Repository**: https://github.com/subloop-xyz/flopstar
+**Project**: Flopstar, an agent for FLOP Labs' Close Call contest (`close-1`) on technocore.chat
+**Repository**: https://github.com/subloop-xyz/flopstar (private)
+**Written**: 25 September 2026, 15:40 UTC
+**Current host**: `hoodwatch` (167.99.238.68), shared with other services and to be decommissioned for Flopstar
+**Target**: a new droplet running only Flopstar
 
----
-
-## Executive Summary
-
-Flopstar is a Python agent for the FLOP Labs "Close Call" trading contest. Currently implemented:
-- **Phase 1**: Security hygiene (key isolation, pre-commit hooks)
-- **Phase 2**: Project setup (vendored challenge code, dependencies)
-- **Phase 3**: Read-only monitor (tracks referee data, no trading yet)
-
-The monitor runs continuously, tracking contest data from technocore.chat and storing it in SQLite. **It does not access the private key** and makes no trading decisions.
+Read this whole document before touching the new droplet. Section 2 is the only place where a
+mistake can't be undone.
 
 ---
 
-## Critical Security Requirements
+## 1. State at handoff
 
-### Private Key Management
+| Item | State |
+|---|---|
+| Referee monitor | **Running on hoodwatch**, started by hand (not systemd); logs to `data/monitor.log`. Fully synced to sweep 37, no gaps, every record signature-verified. |
+| Flopstar owner key | Verified: `uv run flopstar verify-key` printed MATCH for `did:key:z6MkjLpUAGLtNieLnCFQoUScwJxAKwo5PHZcHRsdyiCJG5Bv`. |
+| Flopstar close-1 registration | **Posted** in `close1`, seq 548523, 15:14:12 UTC. The exact record is saved in `data/registration-close1.jsonl`. The mint can't be confirmed by name, because flow posts are truncated. |
+| Own room `d-flopstar-close1` | **NOT CLAIMED YET.** No owner note, no messages. Claim it first (§4). |
+| Key tree | Designed and dry-run only (`docs/TREE.md`). The master seed exists; no tree key is registered, allow-listed or trading. The live trader is **not built**. |
+| systemd units | Drafted in `deploy/`, never installed anywhere. |
+| Secrets hook | Enabled on hoodwatch (`core.hooksPath=.githooks`). It is per-clone, so enable it again on the droplet. |
 
-**CRITICAL**: The private key (`flopstar.pem`) is stored **outside the git repository**.
-
-**Local development**:
-- Location: `~/.config/flopstar/flopstar.pem`
-- Permissions: `600` (owner read/write only)
-- Directory: `~/.config/flopstar/` with `700` permissions
-
-**Cloud deployment**:
-```bash
-# DO NOT clone the key from git - it's not there
-# Transfer the key separately using SCP or secrets manager
-
-# Example deployment to droplet:
-scp ~/.config/flopstar/flopstar.pem user@droplet:/etc/flopstar/keys/
-ssh user@droplet
-
-# On the droplet:
-sudo mkdir -p /etc/flopstar/keys
-sudo chown flopstar:flopstar /etc/flopstar/keys
-sudo chmod 700 /etc/flopstar/keys
-sudo mv ~/flopstar.pem /etc/flopstar/keys/flopstar.pem
-sudo chmod 600 /etc/flopstar/keys/flopstar.pem
-sudo chown flopstar:flopstar /etc/flopstar/keys/flopstar.pem
-
-# Verify
-ls -la /etc/flopstar/keys/
-# Should show: -rw------- 1 flopstar flopstar 302 ... flopstar.pem
-```
-
-**Never**:
-- Commit the key to git (even force-pushing later won't help - history persists)
-- Send the key via Slack, email, or logs
-- Use `git add -f` to bypass `.gitignore`
-- Copy the key into the project directory
-
-**Environment variable**:
-```bash
-export FLOPSTAR_KEY_PATH=/etc/flopstar/keys/flopstar.pem
-```
-
-### Multi-Layer Protection
-
-1. **`.gitignore`**: Blocks `*.pem`, `*.key`, `*.seed`, `.env` files
-2. **Pre-commit hook**: Scans staged files for PEM headers (skips docs)
-3. **Key isolation**: Key stored outside project directory entirely
+### Why a dedicated droplet
+- **Other services on hoodwatch run as root** (a Bun bot on :8080 and Docker). Any of them being
+  compromised exposes the Flopstar key. On its own droplet, nothing else runs.
+- **Rate limits are per IP** (600 reads/min, 300 writes/min, 4 long-polls). hoodwatch shares its
+  IP with FlopWatch, which also reads technocore.chat. Flopstar gets its own budget.
 
 ---
 
-## Deployment Architecture
+## 2. Secrets inventory: read before moving anything
 
-### Recommended Setup
+| Secret | Where it is now | Copies | Notes |
+|---|---|---|---|
+| `flopstar.pem` (Ed25519, PKCS8, **passphrase-encrypted**) | hoodwatch `/root/.config/flopstar/flopstar.pem` (0600) **and** the owner's Mac `~/.config/flopstar/flopstar.pem` | 2 | Never generate a replacement. The Flopstar DID is its identity. |
+| Key passphrase | The owner's head / password manager | – | Never typed into chat, a repo, `data/` or a log. |
+| `close1-master.seed` (32 bytes, hex) | hoodwatch `/root/.config/flopstar/close1-master.seed` (0600) **only** | **1** | Recreates all 64 tree keys. **Back it up offline before anything else.** Losing it loses the tree; leaking it leaks all 64 keys. |
+| `evidence/` (pre-contest proof for the sonnet contest) | The owner's Mac only | 1 | Not needed on the droplet. Keep it backed up. |
 
-```
-Cloud VM (Ubuntu 22.04+ / Debian 12+)
-├── Application user: flopstar (non-root)
-├── Application directory: /opt/flopstar
-├── Keys directory: /etc/flopstar/keys (mode 700)
-├── Data directory: /var/lib/flopstar/data
-├── Logs: journald (systemd) or /var/log/flopstar
-└── Process manager: systemd
-```
+**Rules**
+- **Transfers:** move secrets only over SSH. Never via git, chat, email or logs.
+- **Encrypt at rest:** on the droplet, the passphrase and the seed exist only as **systemd
+  encrypted credentials**. Neither ever sits on disk in the clear.
+- **One live signer at a time.** Don't run signing on hoodwatch and the droplet together.
+- **Delete old copies only after verification.** Shred the hoodwatch copies only after the
+  droplet has passed §3.8, and only after the seed has an offline backup.
 
-### System Dependencies
-
+**Step 0 (on your Mac, before anything else):** back up the seed offline.
 ```bash
-# Python 3.12+
-sudo apt update
-sudo apt install -y python3.12 python3.12-venv curl
-
-# uv package manager
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.cargo/env
-
-# Optional: monitoring tools
-sudo apt install -y htop iotop
+ssh root@167.99.238.68 'cat /root/.config/flopstar/close1-master.seed'
+# store the 64 hex characters in your password manager / offline backup
 ```
 
-### Application User
+---
 
+## 3. New droplet runbook
+
+### 3.1 Droplet
+- Ubuntu 24.04 LTS (needs systemd ≥ 254 for `%d` in unit files; 24.04 ships 255). The smallest
+  size is plenty: the monitor uses under 100 MB of RAM and about 1 MB/day of disk.
+- Log in with SSH keys only. Disable password logins.
+- **No inbound ports other than SSH.** Flopstar only makes outbound HTTPS requests.
 ```bash
-sudo useradd -r -m -d /opt/flopstar -s /bin/bash flopstar
-sudo mkdir -p /etc/flopstar/keys /var/lib/flopstar/data
-sudo chown -R flopstar:flopstar /opt/flopstar /var/lib/flopstar
-sudo chmod 700 /etc/flopstar/keys
+ufw default deny incoming && ufw allow OpenSSH && ufw enable
 ```
 
-### Clone and Install
-
+### 3.2 User, directories, uv
 ```bash
-sudo -u flopstar -i
+useradd --system --home-dir /opt/flopstar --shell /usr/sbin/nologin flopstar
+install -d -o flopstar -g flopstar -m 0755 /opt/flopstar
+install -d -o flopstar -g flopstar -m 0700 /var/lib/flopstar /var/lib/flopstar/data
+install -d -o root     -g flopstar -m 0750 /etc/flopstar
+install -d -o flopstar -g flopstar -m 0700 /etc/flopstar/keys
+install -d -o root     -g root     -m 0700 /etc/flopstar/creds
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+```
+
+### 3.3 Code
+The repo is private. Add a **read-only deploy key** for the droplet on GitHub (repo → Settings →
+Deploy keys) and use it only for this clone.
+```bash
+git clone git@github.com:subloop-xyz/flopstar.git /opt/flopstar
+git -C /opt/flopstar config core.hooksPath .githooks     # per-clone, not versioned
+chown -R flopstar:flopstar /opt/flopstar
+cd /opt/flopstar && sudo -u flopstar env UV_PYTHON=python3.12 UV_CACHE_DIR=/opt/flopstar/.cache/uv uv sync --frozen
+sudo -u flopstar /opt/flopstar/.venv/bin/python -m pytest -q     # expect all tests to pass
+```
+
+### 3.4 Owner key: from the Mac
+Run this **on your Mac**, replacing `NEW` with the droplet's address:
+```bash
+ssh root@NEW 'umask 077; cat > /etc/flopstar/keys/flopstar.pem && chown flopstar:flopstar /etc/flopstar/keys/flopstar.pem && chmod 0600 /etc/flopstar/keys/flopstar.pem' \
+  < ~/.config/flopstar/flopstar.pem
+```
+Then check it on the droplet. It prompts for the passphrase and must print `MATCH`:
+```bash
+cd /opt/flopstar && sudo -u flopstar env FLOPSTAR_KEY_PATH=/etc/flopstar/keys/flopstar.pem .venv/bin/flopstar verify-key
+```
+
+### 3.5 Passphrase: encrypted credential
+You type it once. It's encrypted with the droplet's host key and never written in the clear.
+```bash
+systemd-ask-password -n "Flopstar key passphrase:" \
+  | systemd-creds encrypt --name=flopstar-passphrase - /etc/flopstar/creds/flopstar-passphrase.cred
+chmod 0600 /etc/flopstar/creds/flopstar-passphrase.cred
+```
+With no TPM, `systemd-creds` uses `/var/lib/systemd/credential.secret` (root-only). A copied
+`.cred` file is useless off the box. Root on the droplet can still decrypt it, which is why
+nothing else should run there.
+
+### 3.6 Master seed: from hoodwatch straight into a credential
+Run this **on your Mac**. The seed streams from hoodwatch into `systemd-creds` on the droplet and
+never lands on the droplet's disk in the clear:
+```bash
+ssh root@167.99.238.68 'cat /root/.config/flopstar/close1-master.seed' \
+  | ssh root@NEW 'systemd-creds encrypt --name=close1-master-seed - /etc/flopstar/creds/close1-master-seed.cred && chmod 0600 /etc/flopstar/creds/close1-master-seed.cred'
+```
+Check it by comparing the derived DIDs with the published list. This prints only public DIDs:
+```bash
+systemd-run --pipe --wait -p User=flopstar -p WorkingDirectory=/opt/flopstar \
+  -p LoadCredentialEncrypted=close1-master-seed:/etc/flopstar/creds/close1-master-seed.cred \
+  -p Environment=FLOPSTAR_DATA_DIR=/var/lib/flopstar/data \
+  /bin/sh -c 'FLOPSTAR_TREE_SEED_PATH=$CREDENTIALS_DIRECTORY/close1-master-seed /opt/flopstar/.venv/bin/flopstar tree dids && head -2 /var/lib/flopstar/data/tree-dids.txt'
+```
+The first line must be `0 did:key:z6MkoW9KCbdiBrftF8We3uZSXnyjY8HTZvAtkw5Hyg4E9PM2`.
+
+### 3.7 Data: carry history over
+The monitor DB can be rebuilt by backfill, but only while the referee rooms still hold the
+records. The registration evidence can't be rebuilt at all, because `close1` keeps only about
+6 minutes of history. Copy everything, on your Mac:
+```bash
+ssh root@167.99.238.68 'tar -C /root/var/www/flopstar/data -cz .' \
+  | ssh root@NEW 'tar -C /var/lib/flopstar/data -xz && chown -R flopstar:flopstar /var/lib/flopstar/data && chmod 0600 /var/lib/flopstar/data/*'
+```
+
+### 3.8 Services and verification
+```bash
+cp /opt/flopstar/deploy/*.service /opt/flopstar/deploy/*.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl start flopstar-signer@verify.service      # decrypts credential, loads key, checks DID
+journalctl -u flopstar-signer@verify -n 5           # must show the Flopstar DID; signs nothing
+```
+Pass criteria: `verify` shows the Flopstar DID; the §3.6 check matches; `pytest` passes; and
+`sudo -u nobody cat /etc/flopstar/keys/flopstar.pem` is refused.
+
+### 3.9 Cutover
+Keep this order so that exactly one monitor is running at any time:
+```bash
+# on hoodwatch
+pkill -f "flopstar monitor"
+# on the droplet
+systemctl enable --now flopstar-monitor.service
+journalctl -u flopstar-monitor -f                   # expect "Synced ..." then long-polling
+```
+Enable the timers **only after the room is claimed** (§4):
+```bash
+systemctl enable --now flopstar-heartbeat.timer flopstar-reclaim.timer
+```
+
+### 3.10 Decommission on hoodwatch
+Only after §3.8 has passed and the seed has an offline backup:
+```bash
+shred -u /root/.config/flopstar/flopstar.pem /root/.config/flopstar/close1-master.seed
+rm -rf /root/var/www/flopstar/data        # already copied in §3.7
+```
+The Mac's copy of `flopstar.pem` remains as the backup.
+
+`deploy/MIGRATION.md` covers the same-host variant (moving within hoodwatch). This section
+replaces it for the droplet move.
+
+---
+
+## 4. Own room `d-flopstar-close1`: do this first once the key is on the droplet
+
+We trade in our own `d-` room because `close1` keeps only about 6 minutes of history, and a
+message only counts if the referee reads it before it drops out. The referee has stalled for
+13+ minutes before. A `d-` room can be claimed **only before its first message**, and a lost
+claim can never be retaken.
+
+Run on the droplet as `flopstar`, with the key path set. Each command is a dry run without `--post`.
+```bash
 cd /opt/flopstar
-
-# Clone repository
-git clone https://github.com/subloop-xyz/flopstar.git .
-
-# Install dependencies
-uv sync --dev
-
-# Configure environment
-cp .env.example .env
-nano .env
-# Set:
-#   FLOPSTAR_KEY_PATH=/etc/flopstar/keys/flopstar.pem
-#   FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
-
-# Test
-uv run pytest -v
-uv run ruff check
+export FLOPSTAR_KEY_PATH=/etc/flopstar/keys/flopstar.pem FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
+sudo -E -u flopstar .venv/bin/flopstar room claim --post       # must print OWNED BY FLOPSTAR
+sudo -E -u flopstar .venv/bin/flopstar room heartbeat --post   # first message, only after the claim
+sudo -E -u flopstar .venv/bin/flopstar room register --post    # {"t":"room",...} in close1; saves evidence
+sudo -E -u flopstar .venv/bin/flopstar room status             # "listed by referee: sweep N" once listed
 ```
+If `claim` doesn't print `OWNED BY FLOPSTAR`, **stop**. Someone else holds the name, and the
+room name in `config.OWN_ROOM` has to change before anything else happens.
 
-### Systemd Service
-
-Create `/etc/systemd/system/flopstar-monitor.service`:
-
-```ini
-[Unit]
-Description=Flopstar Close Call Contest Monitor
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=flopstar
-Group=flopstar
-WorkingDirectory=/opt/flopstar
-Environment="PATH=/opt/flopstar/.local/bin:/usr/local/bin:/usr/bin:/bin"
-EnvironmentFile=/opt/flopstar/.env
-ExecStart=/opt/flopstar/.local/bin/uv run flopstar monitor
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=flopstar-monitor
-
-# Security hardening
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/flopstar/data
-ReadOnlyPaths=/etc/flopstar/keys
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable flopstar-monitor
-sudo systemctl start flopstar-monitor
-
-# Check status
-sudo systemctl status flopstar-monitor
-sudo journalctl -u flopstar-monitor -f
-```
+**Keepalive.**
+- **Why:** notes and rooms with no write for 7 days are deleted, and a room with a single message
+  goes after 12 hours.
+- **The timers:** `flopstar-heartbeat.timer` (every 6 h) and `flopstar-reclaim.timer` (rewrites
+  the owner note every 4 days).
+- **Their log:** both write to `data/signatures.log`, as every signature does.
 
 ---
 
-## Architecture Overview
+## 5. Decisions and policies (agreed with the owner)
 
-### Components
+- **Flopstar's main key stays flat.** It holds the identity, owns the room, and makes the
+  registration posts. It never trades.
+- **Trading is done by a 64-key tree.** The design, dry-run results and remaining work are in
+  `docs/TREE.md`.
+  - The close-1 rules allow it: "One operator may run many keys and hold several places";
+    `identity_policy: any did:key`; the organiser "disqualifies nobody at discretion".
+  - The one-DID rule came from the **sonnet** contest and doesn't apply here.
+- **Tree keys are close-1-only.** They sign only in `close1` and `d-flopstar-close1`, and never
+  anywhere else on technocore.chat.
+  - They register in `d-flopstar-close1` after the referee lists it, and each is allow-listed first.
+  - After the lock, Flopstar signs and publishes a statement listing all 64 tree DIDs, in its
+    room and in this repo.
+- **Only a party to a trade posts it.** This is our **policy choice**. The confirmed rule is
+  only that the poster must be a registered key.
+- **Signer policy.** All owner-key signing goes through `PolicySigner`: rooms `close1` and
+  `d-flopstar-close1`; notes `room-owners` and `room-allow` for our room; message types `owner`,
+  `room`, `trade` and `heartbeat`. Every signature is logged. Never print key material.
+- **Never generate a replacement Flopstar key.**
+
+---
+
+## 6. Contest facts (verified live, 25 Sep 2026)
+
+- **Referee DID** (provisional: close-1 has no signed launch record yet):
+  `did:key:z6MkowHQwsx9xr84WbWN3YCnKutyBnBXkT1ChKY4uEAAMzte`. Pinned in FLOP Labs' signed sonnet-2
+  launch record; it owns the `d-close1-*` rooms and signed the seed.
+- **Seed:** `d-close1-price` seq 1 pins package `bae09812…96dafa`, which matches
+  `vendor/close-call/manifest.json` (commit 66c1da3). Seed price 226.14.
+- **Timeline:** sweeps every 5 min from 12:05 UTC on 25 Sep; lock at sweep 2556, 4 Oct 09:00 UTC;
+  *S* = the last `xyz:NVDA` trade before 10:00 UTC on 4 Oct.
+  - **The referee runs late:** sweep 32 posted 3 minutes late, then nothing came for 13+ minutes.
+  - **Stale reference:** the reference can be old (`age_s` 3002 at sweep 32), because
+    `xyz:NVDA` trades thinly.
+- **Field size:** 352,876 owners and 51 registered rooms at sweep 32, so sybil farms are active.
+  The top PnL was about +104.
+- **Record format:** `{"seq","ts","from","text","nonce","sig"}`.
+  - `from` is the signer DID. `sig` is 86 characters of unpadded base64url over
+    `<room>|<nonce>|<text>`.
+  - Nonces can be 19 digits: parse them as ints or strings, never floats.
+  - Signed POSTs send `nonce` as a **digit string**.
+- **Flow posts** list `settled`/`void` as `[id, reason]` pairs, but they're **truncated**; an
+  `omitted` object counts what was left out. The full flow files can't be downloaded (issue #6),
+  so a full replay is blocked. Confirm our own trades with a local shadow fold of our keys.
+- **API behavior:**
+  - `?since=S&limit=L` returns the **newest** L messages after S.
+  - `/r/<room>/export` returns the whole retained history as raw JSONL and takes no parameters.
+  - A 429 body says "retry after: Ns".
+  - The server refuses the same text more than 5 times in 120 s (a 422).
+- **Claim notes:**
+  - `room-owners` and `room-allow` are signed writes over `<ns>|<key>|<nonce>|<value>`.
+  - Both share `/kv/room-nonce/<room>` as their replay counter; a new nonce must be above it.
+  - The allow-list note is capped at 8,192 characters, which is enough for about 140 DIDs.
+
+---
+
+## 7. Code map and commands
 
 ```
 src/flopstar/
-├── cli.py           Entry point (flopstar monitor)
-├── config.py        Contest config, referee DID, room names
-├── didkey.py        DID:key ↔ Ed25519, signature verification
-├── technocore.py    HTTP client for technocore.chat
-├── store.py         Append-only SQLite storage
-└── monitor.py       Main monitoring loop
+├── cli.py         entry point
+├── config.py      referee DID, rooms, OWN_ROOM, paths
+├── didkey.py      did:key → Ed25519, signature verification (base64url)
+├── technocore.py  HTTP client: reads, long-poll, export, signed posts, signed notes
+├── store.py       append-only SQLite (room, seq) → raw record
+├── monitor.py     referee monitor: long-poll price, backfill gaps, sync the other rooms
+├── signer.py      encrypted key loading, did derivation, PolicySigner
+├── register.py    Flopstar's close-1 owner registration
+├── room.py        own room: status | verify | claim | register | heartbeat | reclaim
+├── evidence.py    save our exact signed records from the room export
+├── tree.py        key tree: HKDF derivation, sizing, round/split engine
+├── dryrun.py      tree against the vendored fold over simulated paths
+└── treecli.py     tree: init | dids | dryrun
+deploy/            systemd units, timers, same-host MIGRATION.md
+docs/TREE.md       key tree design and dry-run results
+vendor/close-call/ challenge package at 66c1da3. Never edit it.
 ```
 
-### Data Flow
+| Command | Signs? | Needs |
+|---|---|---|
+| `flopstar monitor` | no | network |
+| `flopstar verify-key` | no | key + passphrase |
+| `flopstar register [--post]` | yes | key + passphrase (done; repeating is harmless) |
+| `flopstar room status` | no | network |
+| `flopstar room verify` | no | key + passphrase |
+| `flopstar room claim/register/heartbeat/reclaim [--post]` | only with `--post` | key + passphrase |
+| `flopstar tree init` | no | creates the seed; **refuses if one exists**. Do NOT run on the droplet; the seed comes from hoodwatch (§3.6). |
+| `flopstar tree dids` | no | seed |
+| `flopstar tree dryrun [paths]` | no | nothing (throwaway seed) |
 
+Environment variables: `FLOPSTAR_KEY_PATH`, `FLOPSTAR_PASSPHRASE_FILE`, `FLOPSTAR_DATA_DIR`,
+`FLOPSTAR_TREE_SEED_PATH`.
+
+Checks: `uv run pytest -q` (14 tests), `uv run ruff check`, and `python3 vendor/close-call/scripts/verify.py`.
+
+---
+
+## 8. Next work, in order
+
+1. **Droplet move** (§3) and **room claim** (§4).
+2. **Wait for the referee to list the room** (`room status`).
+3. **Build the live trader,** per `docs/TREE.md` "Still to build":
+   - Hyperliquid price reader;
+   - shadow fold of our 64 keys;
+   - tree signer policy;
+   - registration sequence (allow-list → 64 owner posts);
+   - kill switch and alerts;
+   - a `flopstar-tree.service` unit with both credentials.
+4. **Owner reviews the trader's dry run, then round 0:** all 32 pairs in one sweep.
+5. **After the lock:** Flopstar signs a statement listing all 64 tree DIDs.
+
+---
+
+## 9. Operations
+
+```bash
+systemctl status flopstar-monitor; journalctl -u 'flopstar-*' -n 50
+cd /opt/flopstar && sudo -u flopstar env FLOPSTAR_DATA_DIR=/var/lib/flopstar/data .venv/bin/flopstar room status
 ```
-technocore.chat
-    ↓ (long-poll d-close1-price every 10s)
-TechnocoreClient
-    ↓ (verify signature against REFEREE_DID)
-ContestMonitor
-    ↓ (store raw JSON)
-MessageStore (SQLite)
-    ↓ (query for analysis)
-Future: Trading Agent
-```
-
-### Monitor Behavior
-
-1. **Startup**: Syncs all referee rooms from sequence 0 (or last known)
-2. **Long-poll**: Only `d-close1-price` (10s timeout, returns immediately if new data)
-3. **Trigger**: On new price message → wait 15s (the other four rooms post 2–8s after the price room) → sync them
-4. **Gap detection**: `?since=S` returns the NEWEST messages after S, so if `first_seq > S + 1` the
-   monitor backfills from `/r/<room>/export` (the whole retained ring as raw JSONL; no query params)
-5. **Rate limiting**: Honors 429, backs off for the "retry after: Ns" in the body (+1s)
-6. **Signature verification**: Every message verified against referee DID before storage.
-   Records carry the signer in `from`; `sig` is 86 chars of unpadded base64url over
-   `<room>|<nonce>|<text>`. Nonces can be 19 digits: keep them as ints/strings, never floats.
-
-**Key constraint**: Only 4 concurrent long-polls per IP. We use 1 to stay safe.
-
-### Database Schema
 
 ```sql
-CREATE TABLE messages (
-    room TEXT NOT NULL,
-    seq INTEGER NOT NULL,
-    raw_json TEXT NOT NULL,
-    indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (room, seq)
-);
+-- sqlite3 /var/lib/flopstar/data/flopstar.db
+SELECT room, COUNT(*), MIN(seq), MAX(seq) FROM messages GROUP BY room;
 
-CREATE INDEX idx_messages_room ON messages(room, seq);
-```
-
-Location: `$FLOPSTAR_DATA_DIR/flopstar.db` (default: `./data/flopstar.db`)
-
----
-
-## Contest Information
-
-### Timeline
-
-| Event | Date/Time (UTC) | Status |
-|-------|-----------------|--------|
-| Opening | Sep 25, 2026 12:00 | **LIVE** |
-| Sweeps | Every 5 min (2,556 total) | Running |
-| Lock | Oct 4, 2026 09:00 | 8.5 days remaining |
-| Closing Price | Oct 4, 2026 10:00 | Final settlement |
-
-### Referee Rooms (Read-Only)
-
-| Room | Purpose | Long-Poll? |
-|------|---------|------------|
-| `d-close1-price` | Reference price, limits, global price | **YES** |
-| `d-close1-flow` | Trade outcomes (truncated lists + `omitted` counts) | No |
-| `d-close1-positions` | Open interest, positions | No |
-| `d-close1-pnl` | PnL and leaderboard | No |
-| `d-close1-state` | State roots | No |
-
-### Trust Anchor (PROVISIONAL)
-
-**⚠️ WARNING**: Using referee DID from sonnet-2 launch record:
-```
-did:key:z6MkowHQwsx9xr84WbWN3YCnKutyBnBXkT1ChKY4uEAAMzte
-```
-
-Close-1 **does not have a signed launch record yet**. Monitor logs loud warning on startup. All referee messages are verified against this DID before storage.
-
-### Known Issue: Flow Files Not Downloadable
-
-**Investigation result** (revised 2026-09-25 against live posts): `d-close1-flow` posts list
-per-trade outcomes as `settled`/`void` arrays of `[id, reason]`, but they are **truncated**: an
-`omitted` object counts what was left out (e.g. sweep 32: `{"mints":19414,"settled":1237,"void":6}`).
-Full per-sweep records are in the flow **files** (referenced by hash), which are **not downloadable**
-(issue #6 on challenge repo).
-
-**Implication**: Cannot do full-ledger replay from the flow room alone. You can still confirm our own
-trade ids when they appear in the posted arrays, but absence proves nothing while `omitted` is non-zero.
-
----
-
-## Monitoring and Operations
-
-### Health Checks
-
-```bash
-# Service status
-sudo systemctl status flopstar-monitor
-
-# Live logs
-sudo journalctl -u flopstar-monitor -f
-
-# Database check
-sqlite3 /var/lib/flopstar/data/flopstar.db "SELECT room, COUNT(*), MAX(seq) FROM messages GROUP BY room;"
-
-# Disk usage
-du -sh /var/lib/flopstar/data/
-```
-
-### Expected Log Output
-
-```
-2026-09-25 12:00:01 [WARNING] flopstar.monitor: ⚠️  Using PROVISIONAL trust anchor...
-2026-09-25 12:00:01 [INFO] flopstar.monitor: Using database: /var/lib/flopstar/data/flopstar.db
-2026-09-25 12:00:01 [INFO] flopstar.monitor: Starting initial sync of all referee rooms
-2026-09-25 12:00:02 [INFO] flopstar.monitor: Synced d-close1-price: 5 new messages
-2026-09-25 12:00:03 [INFO] flopstar.monitor: Synced d-close1-flow: 3 new messages
-...
-2026-09-25 12:00:10 [INFO] flopstar.monitor: Starting long-poll on d-close1-price
-```
-
-### Troubleshooting
-
-**No new messages**:
-- Check network: `curl https://technocore.chat/r/d-close1-price?format=json`
-- Verify sequence: Query DB for last seq, compare to live room
-
-**Rate limited**:
-- Monitor logs for "Rate limited (429)" messages
-- Automatic 60s backoff, will retry
-- Check for other processes hitting technocore.chat from same IP
-
-**Referee lag**: sweeps are not always on the 5-minute clock. On 2026-09-25 sweep 32 (due 14:45)
-posted at 14:48, and nothing followed for 13+ minutes. A quiet long-poll during such a stall is
-normal; compare `ts` of the latest `d-close1-price` record with the clock before suspecting the monitor.
-
-**Signature verification failures**:
-- **CRITICAL**: Invalid signatures mean compromised data or wrong referee DID
-- Check logs for "INVALID SIGNATURE" errors
-- Verify referee DID against launch record
-
-**Database locked**:
-- SQLite doesn't support high concurrency writes
-- Only one monitor process per database file
-- Check for stale processes: `ps aux | grep flopstar`
-
-**High memory usage**:
-- Check message backlog: `SELECT COUNT(*) FROM messages;`
-- Monitor processes with `htop`
-- Expected: <100MB for monitor process
-
----
-
-## Next Steps / TODOs
-
-### Phase 4: Trading Logic (Not Yet Implemented)
-
-**Prerequisites**:
-1. Decide on trading strategy (market making, directional, arbitrage, etc.)
-2. Implement position risk management
-3. Build trade signing and posting logic
-4. Add monitoring for our own trades in flow room
-
-**Components to build**:
-```
-src/flopstar/
-├── signer.py        Load key, sign trades (did:key format)
-├── trader.py        Trading strategy and execution
-├── position.py      Position tracking and risk management
-└── market.py        Order book / market data analysis
-```
-
-**New commands**:
-- `uv run flopstar register` - Post owner registration message
-- `uv run flopstar trade` - Run trading agent (with key access)
-- `uv run flopstar status` - Check positions, PnL from DB
-
-### Phase 5: FlopWatch Integration
-
-**Opportunity**: Use FlopWatch API at `https://flopwatch.xyz/api/snapshot` for:
-1. Cross-validation of our stored referee data
-2. Backup data source during technocore.chat downtime
-3. Historical backfill if we miss sequences
-4. Aggregated analytics and derived metrics
-
-**Implementation**:
-```python
-# src/flopstar/flopwatch.py
-class FlopWatchClient:
-    async def get_snapshot(self) -> dict:
-        """Fetch latest contest snapshot."""
-
-    async def validate_against_local(self, store: MessageStore):
-        """Cross-check our DB against FlopWatch data."""
-```
-
-### Infrastructure Improvements
-
-1. **Backup automation**:
-   ```bash
-   # Cron job to backup SQLite daily
-   0 0 * * * sqlite3 /var/lib/flopstar/data/flopstar.db ".backup /backups/flopstar-$(date +\%Y\%m\%d).db"
-   ```
-
-2. **Metrics and alerting**:
-   - Prometheus exporter for message counts, sync lag
-   - Alert on signature verification failures
-   - Alert on prolonged rate limiting
-
-3. **Multi-instance deployment**:
-   - Run monitor on multiple IPs/regions for redundancy
-   - Sync databases periodically for consensus
-   - Load balancer for API (when trading is implemented)
-
-4. **Testing improvements**:
-   - Integration tests against live technocore.chat (test rooms)
-   - Mock referee for unit testing signature verification
-   - Property-based tests for DID:key encoding/decoding
-
----
-
-## Vendored Code
-
-**Location**: `vendor/close-call/`
-**Source**: https://github.com/flop-labs/technocore-close-call-challenge
-**Commit**: `66c1da3`
-**Manifest SHA256**: `bae09812e25eb6f1369c611f24964f7ea0acafddfc45301a16f33f941296dafa`
-
-**Verification**:
-```bash
-shasum -a 256 vendor/close-call/manifest.json
-python3 vendor/close-call/scripts/verify.py
-```
-
-**Important**: Never edit vendored files. Import or subprocess `close_call_fold.py` as-is.
-
----
-
-## Development Workflow
-
-### Local Testing
-
-```bash
-# Run monitor locally (will create ./data/flopstar.db)
-uv run flopstar monitor
-
-# In another terminal, query DB
-sqlite3 data/flopstar.db "SELECT * FROM messages ORDER BY indexed_at DESC LIMIT 5;"
-
-# Run tests
-uv run pytest -v
-
-# Lint
-uv run ruff check
-uv run ruff format --check
-```
-
-### Git Workflow
-
-```bash
-# Pre-commit hook is active - test it
-echo "-----BEGIN PRIVATE KEY-----" > test.pem
-git add test.pem
-git commit -m "test"  # Should fail with hook error
-rm test.pem
-
-# Normal workflow
-git add .
-git commit -m "Your message"
-git push origin main
-```
-
-### Updating Dependencies
-
-```bash
-# Add new dependency
-uv add package-name
-
-# Update all
-uv sync --upgrade
-
-# Lock file
-git add uv.lock pyproject.toml
-git commit -m "Update dependencies"
-```
-
----
-
-## API Reference
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `FLOPSTAR_KEY_PATH` | `~/.config/flopstar/flopstar.pem` | Path to Ed25519 private key |
-| `FLOPSTAR_DATA_DIR` | `./data` | SQLite database directory |
-
-### Commands
-
-```bash
-uv run flopstar monitor    # Run read-only monitor (no key access)
-uv run pytest -v           # Run tests
-uv run ruff check          # Lint code
-```
-
-### Database Queries
-
-```sql
--- Message counts by room
-SELECT room, COUNT(*), MIN(seq), MAX(seq)
-FROM messages
-GROUP BY room;
-
--- Recent messages
-SELECT room, seq, json_extract(raw_json, '$.text')
-FROM messages
-ORDER BY indexed_at DESC
-LIMIT 10;
-
--- Check for gaps
+-- gaps (should be empty)
 SELECT room, prev_seq, seq FROM (
-    SELECT room, seq, LAG(seq) OVER (PARTITION BY room ORDER BY seq) AS prev_seq
-    FROM messages
+    SELECT room, seq, LAG(seq) OVER (PARTITION BY room ORDER BY seq) AS prev_seq FROM messages
 ) WHERE prev_seq IS NOT NULL AND seq != prev_seq + 1;
 
--- Referee messages by type
-SELECT json_extract(json_extract(raw_json, '$.text'), '$.t') AS msg_type, COUNT(*)
-FROM messages
-WHERE room LIKE 'd-close1-%'
-GROUP BY msg_type;
+-- referee messages by type
+SELECT json_extract(json_extract(raw_json, '$.text'), '$.t') AS t, COUNT(*) FROM messages GROUP BY t;
 ```
 
----
+**Troubleshooting**
+- **Long-poll quiet:** compare the latest `d-close1-price` `ts` with the clock. A referee stall
+  looks exactly like this and isn't our fault.
+- **INVALID SIGNATURE in a referee room:** stop and investigate. Either the data is forged or
+  the referee key changed. Check for a signed close-1 launch record.
+- **429:** the client waits for the time the server names. Check that nothing else on the droplet
+  hits technocore.chat.
+- **`claim` returns 409 / not ours:** someone else holds the name. Don't post anything in it.
+- **The hook didn't run on a commit:** run `git config core.hooksPath .githooks` in that clone.
 
-## Support and Resources
-
-### Documentation
-
-- **Main README**: `README.md` - User-facing documentation
-- **Challenge Rules**: `vendor/close-call/close-call-game.md`
-- **Contest Config**: `vendor/close-call/contest.json`
-- **API Docs**: https://technocore.chat/llms.txt
-
-### Key Contacts
-
-- **FLOP Labs**: Check challenge repo for official announcements
-- **Contest Room**: https://technocore.chat/r/close1
-- **Issues**: https://github.com/flop-labs/technocore-close-call-challenge/issues
-
-### Debugging
-
-```bash
-# Enable debug logging
-# In monitor.py, change: level=logging.DEBUG
-
-# Inspect HTTP traffic
-uv add httpx[cli]
-uv run httpx https://technocore.chat/r/d-close1-price?format=json
-
-# Database introspection
-sqlite3 data/flopstar.db .schema
-sqlite3 data/flopstar.db .tables
-```
-
----
-
-## Security Checklist
-
-Before deploying to production:
-
-- [ ] Private key stored outside git repository
-- [ ] Private key permissions: `600` (owner read/write only)
-- [ ] Keys directory permissions: `700` (owner access only)
-- [ ] Application runs as non-root user
-- [ ] Systemd security hardening enabled
-- [ ] Environment variables set (not hardcoded paths)
-- [ ] Pre-commit hook active and tested
-- [ ] No `.pem` files in git history (`git log --all --oneline -- '*.pem'`)
-- [ ] Database directory writable by app user only
-- [ ] Firewall configured (if exposing API later)
-- [ ] Backups automated and tested
-- [ ] Logs rotated (journald handles this)
-- [ ] Secrets never logged (review logging statements)
-
----
-
-## Performance Expectations
-
-### Resource Usage
-
-- **CPU**: <5% idle, <20% during sync
-- **Memory**: 50-100MB
-- **Disk**: ~1MB/day for message storage (varies by activity)
-- **Network**: Long-poll persistent connection, ~1KB/10s when idle
-
-### Scale Limits
-
-- **SQLite**: Handles millions of rows fine for read-heavy workload
-- **Concurrency**: Monitor is single-threaded (one process per DB)
-- **Backfill**: Export API can be slow, expect ~1 sec per 100 messages
-
----
-
-## Final Notes
-
-This monitor is **production-ready for data collection**. It does not trade or access the private key yet.
-
-**Before implementing trading logic**:
-1. Thoroughly test signature verification against known valid trades
-2. Implement dry-run mode (sign trades but don't post)
-3. Start with tiny positions (0.1 contracts) to test settlement
-4. Monitor flow room for your trade IDs to confirm settlement
-5. Build kill switch (emergency position exit)
-
-**Risk warning**: This is a contest with real FLOP token prizes. Bugs in trading logic could result in:
-- Locked collateral (every contract ties up its price in POLF)
-- Fee losses (1% each side)
-- Void trades (wasted time/effort)
-- Missed opportunities (if monitor falls behind)
-
-Test extensively before deploying to production.
-
----
-
-**Questions?** Review:
-1. Main README: `README.md`
-2. Challenge docs: `vendor/close-call/close-call-game.md`
-3. Source code: Well-commented, start with `src/flopstar/monitor.py`
-
-Good luck! 🚀
+**Security checklist (droplet)**
+- [ ] Seed backed up offline before any move
+- [ ] SSH keys only; `ufw` allows only OpenSSH
+- [ ] `flopstar` user is non-root; key `0600 flopstar`; creds `0600 root`
+- [ ] Passphrase and seed exist only as `.cred` files
+- [ ] `flopstar-signer@verify` passes; `sudo -u nobody cat` on the key is refused
+- [ ] `core.hooksPath` set in `/opt/flopstar`
+- [ ] hoodwatch copies shredded after verification; only one monitor and one signer running
+- [ ] `git log --all -- '*.pem' '*.seed'` is empty
