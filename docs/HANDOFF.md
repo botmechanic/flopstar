@@ -4,7 +4,8 @@
 **Repository**: https://github.com/subloop-xyz/flopstar (private)
 **Written**: 25 September 2026, 15:40 UTC; **updated 25 September 2026, 23:05 UTC** after the move
 **Host**: droplet `flopstar` (68.183.21.81), running only Flopstar
-**Previous host**: `hoodwatch` (167.99.238.68): no longer runs anything for Flopstar
+**Previous host**: `hoodwatch` (167.99.238.68): decommissioned for Flopstar on 25 Sep; its repo
+clone was deleted and its copies of the key and seed shredded (owner-confirmed)
 
 The droplet move (§3) and the room setup (§4) are done, and the tree trader is live. §3 stays as
 the runbook for rebuilding the droplet. Section 2 is the only place where a mistake can't be
@@ -38,9 +39,9 @@ undone.
 
 | Secret | Where it is now | Copies | Notes |
 |---|---|---|---|
-| `flopstar.pem` (Ed25519, PKCS8, **passphrase-encrypted**) | Droplet `/etc/flopstar/keys/flopstar.pem` (0600 flopstar) **and** the owner's Mac `~/.config/flopstar/flopstar.pem`. The hoodwatch copy is to be shredded (§3.10). | 2 | Never generate a replacement. The Flopstar DID is its identity. |
+| `flopstar.pem` (Ed25519, PKCS8, **passphrase-encrypted**) | Droplet `/etc/flopstar/keys/flopstar.pem` (0600 flopstar) **and** the owner's Mac `~/.config/flopstar/flopstar.pem`. The hoodwatch copy is shredded. | 2 | Never generate a replacement. The Flopstar DID is its identity. |
 | Key passphrase | The owner's head / password manager; on the droplet only as `/etc/flopstar/creds/flopstar-passphrase.cred` | – | Never typed into chat, a repo, `data/` or a log. |
-| `close1-master.seed` (32 bytes, hex) | Droplet, only as `/etc/flopstar/creds/close1-master-seed.cred`; the owner's offline backup. The hoodwatch copy is to be shredded (§3.10). | 2 | Recreates all 64 tree keys. Losing it loses the tree; leaking it leaks all 64 keys. |
+| `close1-master.seed` (32 bytes, hex) | Droplet, only as `/etc/flopstar/creds/close1-master-seed.cred`; the owner's offline backup. The hoodwatch copy is shredded. | 2 | The offline backup is now the only way to rebuild the droplet's seed. Recreates all 64 tree keys. Losing it loses the tree; leaking it leaks all 64 keys. |
 | `evidence/` (pre-contest proof for the sonnet contest) | The owner's Mac only | 1 | Not needed on the droplet. Keep it backed up. |
 
 **Rules**
@@ -178,6 +179,11 @@ systemctl enable --now flopstar-heartbeat.timer flopstar-reclaim.timer
 ```
 
 ### 3.10 Decommission on hoodwatch
+
+**Done (25 Sep 2026, owner-confirmed):** the hoodwatch repo clone was deleted and its key and
+seed shredded. On a rebuild, the key comes from the Mac (§3.4) and the seed from the owner's
+offline backup, piped into `systemd-creds encrypt` the same way as §3.6.
+
 Only after §3.8 has passed and the seed has an offline backup:
 ```bash
 shred -u /root/.config/flopstar/flopstar.pem /root/.config/flopstar/close1-master.seed
@@ -333,7 +339,7 @@ vendor/close-call/ challenge package at 66c1da3. Never edit it.
 | `flopstar room verify` | no | key + passphrase |
 | `flopstar room claim/register/heartbeat/reclaim [--post]` | only with `--post` | key + passphrase |
 | `flopstar room allow [--post]` | only with `--post` | `data/tree-dids.txt`; key + passphrase to post |
-| `flopstar tree init` | no | creates the seed; **refuses if one exists**. Do NOT run on the droplet; the seed comes from hoodwatch (§3.6). |
+| `flopstar tree init` | no | creates the seed; **refuses if one exists**. Never run it: the seed already exists, and a new one would be a different tree (rebuild from the offline backup, §3.10). |
 | `flopstar tree dids` | no | seed |
 | `flopstar tree dryrun [paths]` | no | nothing (throwaway seed) |
 | `flopstar trader run` / `trader status` | no | paper mode: throwaway keys (`data/trader-paper.json`) |
@@ -371,8 +377,7 @@ Checks: `uv run pytest -q` (25 tests), `uv run ruff check`, and `python3 vendor/
 1. **Watch round 1.** The first 3% move from 225.18 (≥ 232.94 or ≤ 218.42) is the first flip on
    real prices: a close in one sweep, a reopen in the next. Check both settle.
 2. **Alerts.** A tripped kill switch only logs and writes `data/KILL`; add a push notification.
-3. **Shred hoodwatch's key and seed** (§3.10), once the seed's offline backup is confirmed.
-4. **After the lock:** Flopstar signs a statement listing all 64 tree DIDs, in its room and here.
+3. **After the lock:** Flopstar signs a statement listing all 64 tree DIDs, in its room and here.
 
 ---
 
@@ -420,5 +425,5 @@ SELECT json_extract(json_extract(raw_json, '$.text'), '$.t') AS t, COUNT(*) FROM
 - [x] Passphrase and seed exist only as `.cred` files
 - [x] `flopstar-signer@verify` passes; `sudo -u nobody cat` on the key is refused
 - [x] `core.hooksPath` set in `/opt/flopstar`
-- [ ] hoodwatch copies shredded after verification (monitor stopped there; one signer running)
+- [x] hoodwatch copies shredded after verification; only one monitor and one signer running
 - [x] `git log --all -- '*.pem' '*.seed'` is empty
