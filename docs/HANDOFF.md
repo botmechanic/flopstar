@@ -1,27 +1,30 @@
-# Flopstar Handoff: moving to a dedicated droplet
+# Flopstar Handoff: running on a dedicated droplet
 
 **Project**: Flopstar, an agent for FLOP Labs' Close Call contest (`close-1`) on technocore.chat
 **Repository**: https://github.com/subloop-xyz/flopstar (private)
-**Written**: 25 September 2026, 15:40 UTC (room claim added 15:50 UTC)
-**Current host**: `hoodwatch` (167.99.238.68), shared with other services and to be decommissioned for Flopstar
-**Target**: a new droplet running only Flopstar
+**Written**: 25 September 2026, 15:40 UTC; **updated 25 September 2026, 23:05 UTC** after the move
+**Host**: droplet `flopstar` (68.183.21.81), running only Flopstar
+**Previous host**: `hoodwatch` (167.99.238.68): no longer runs anything for Flopstar
 
-Read this whole document before touching the new droplet. Section 2 is the only place where a
-mistake can't be undone.
+The droplet move (§3) and the room setup (§4) are done, and the tree trader is live. §3 stays as
+the runbook for rebuilding the droplet. Section 2 is the only place where a mistake can't be
+undone.
 
 ---
 
-## 1. State at handoff
+## 1. State (25 Sep 2026, 23:05 UTC)
 
 | Item | State |
 |---|---|
-| Referee monitor | **Running on hoodwatch**, started by hand (not systemd); logs to `data/monitor.log`. Fully synced to sweep 37, no gaps, every record signature-verified. |
-| Flopstar owner key | Verified: `uv run flopstar verify-key` printed MATCH for `did:key:z6MkjLpUAGLtNieLnCFQoUScwJxAKwo5PHZcHRsdyiCJG5Bv`. |
-| Flopstar close-1 registration | **Posted** in `close1`, seq 548523, 15:14:12 UTC. The exact record is saved in `data/registration-close1.jsonl`. The mint can't be confirmed by name, because flow posts are truncated. |
-| Own room `d-flopstar-close1` | **Claimed by Flopstar at 15:42:31 UTC on 25 Sep** (room-nonce `1790350948933`). No messages yet, not registered in `close1`, not listed by the referee. **The claim must be rewritten by 2 Oct 15:42 UTC** (7-day expiry, §4). |
-| Key tree | Designed and dry-run only (`docs/TREE.md`). The master seed exists; no tree key is registered, allow-listed or trading. The live trader is **not built**. |
-| systemd units | Drafted in `deploy/`, never installed anywhere. |
-| Secrets hook | Enabled on hoodwatch (`core.hooksPath=.githooks`). It is per-clone, so enable it again on the droplet. |
+| Referee monitor | `flopstar-monitor.service` on the droplet. All five referee rooms complete from seq 1, no gaps, every record signature-verified. |
+| Flopstar owner key | On the droplet at `/etc/flopstar/keys/flopstar.pem`; the passphrase is an encrypted credential. `flopstar-signer@verify` matches `did:key:z6MkjLpUAGLtNieLnCFQoUScwJxAKwo5PHZcHRsdyiCJG5Bv`. |
+| Flopstar close-1 registration | Posted in `close1`, seq 548523, 15:14:12 UTC; evidence in `data/registration-close1.jsonl`. |
+| Own room `d-flopstar-close1` | Claimed; first message 22:28:53 UTC; registered in `close1` (seq 1039625, evidence in `data/registration-room.jsonl`); **listed by the referee at sweep 126**. Heartbeat (6 h) and reclaim (4 d) timers on; the claim was last rewritten 22:29:38 UTC, so it lapses only if no rewrite happens by 2 Oct 22:29 UTC. |
+| Allow-list | The 64 tree DIDs, written by Flopstar at 22:48:51 UTC (3,647 of 8,192 characters). |
+| Key tree | 64 keys registered in our room at 22:52 UTC, **minted at sweep 131**. |
+| Tree trader | **Live** (`flopstar-trader.service`). Round 0 (32 pairs, 43.08 each at 225.19) settled at sweep 132 with no voids. Round 1 triggers at ±3% from the round-0 reference 225.18. |
+| Paper trader | `flopstar-trader-paper.service`: the same engine on throwaway keys, posting nothing, for comparison. |
+| Secrets hook | Enabled in both clones (`/root/var/www/flopstar`, `/opt/flopstar`). |
 
 ### Why a dedicated droplet
 - **Other services on hoodwatch run as root** (a Bun bot on :8080 and Docker). Any of them being
@@ -35,9 +38,9 @@ mistake can't be undone.
 
 | Secret | Where it is now | Copies | Notes |
 |---|---|---|---|
-| `flopstar.pem` (Ed25519, PKCS8, **passphrase-encrypted**) | hoodwatch `/root/.config/flopstar/flopstar.pem` (0600) **and** the owner's Mac `~/.config/flopstar/flopstar.pem` | 2 | Never generate a replacement. The Flopstar DID is its identity. |
-| Key passphrase | The owner's head / password manager | – | Never typed into chat, a repo, `data/` or a log. |
-| `close1-master.seed` (32 bytes, hex) | hoodwatch `/root/.config/flopstar/close1-master.seed` (0600) **only** | **1** | Recreates all 64 tree keys. **Back it up offline before anything else.** Losing it loses the tree; leaking it leaks all 64 keys. |
+| `flopstar.pem` (Ed25519, PKCS8, **passphrase-encrypted**) | Droplet `/etc/flopstar/keys/flopstar.pem` (0600 flopstar) **and** the owner's Mac `~/.config/flopstar/flopstar.pem`. The hoodwatch copy is to be shredded (§3.10). | 2 | Never generate a replacement. The Flopstar DID is its identity. |
+| Key passphrase | The owner's head / password manager; on the droplet only as `/etc/flopstar/creds/flopstar-passphrase.cred` | – | Never typed into chat, a repo, `data/` or a log. |
+| `close1-master.seed` (32 bytes, hex) | Droplet, only as `/etc/flopstar/creds/close1-master-seed.cred`; the owner's offline backup. The hoodwatch copy is to be shredded (§3.10). | 2 | Recreates all 64 tree keys. Losing it loses the tree; leaking it leaks all 64 keys. |
 | `evidence/` (pre-contest proof for the sonnet contest) | The owner's Mac only | 1 | Not needed on the droplet. Keep it backed up. |
 
 **Rules**
@@ -57,6 +60,20 @@ ssh root@167.99.238.68 'cat /root/.config/flopstar/close1-master.seed'
 ---
 
 ## 3. New droplet runbook
+
+**Done on 25 September 2026, 21:40–22:30 UTC**, on `flopstar` (68.183.21.81). Kept as the runbook
+for rebuilding the droplet. Where the move differed from the steps below:
+- **Code (§3.3):** `/opt/flopstar` was cloned from the working copy at `/root/var/www/flopstar`,
+  not with a deploy key. Updates are deployed the same way (§7).
+- **Seed (§3.6):** copied with `scp -3` from hoodwatch into `/run/flopstar-seed/` (RAM only), then
+  encrypted with `systemd-creds encrypt` and the plain copy shredded.
+- **Data (§3.7):** hoodwatch no longer had `/root/var/www/flopstar/data`, so the data came from the
+  owner's backup tarball of it (taken 25 Sep ~15:51 UTC). The monitor backfilled the rest.
+- **Pushing:** the working copy pushes over HTTPS with a fine-grained token saved by
+  `credential.helper store` in `/root/.git-credentials`. Replace it when it expires.
+- **Paste hazard:** long commands pasted into the droplet's terminal have been split at line
+  breaks, running half a command. Signing steps are one-shot units so the command is short.
+
 
 ### 3.1 Droplet
 - Ubuntu 24.04 LTS (needs systemd ≥ 254 for `%d` in unit files; 24.04 ships 255). The smallest
@@ -173,37 +190,31 @@ replaces it for the droplet move.
 
 ---
 
-## 4. Own room `d-flopstar-close1`: claimed; finish setup on the droplet
+## 4. Own room `d-flopstar-close1`: listed, allow-listed, trading
 
-We trade in our own `d-` room because `close1` keeps only about 6 minutes of history, and a
-message only counts if the referee reads it before it drops out. The referee has stalled for
-13+ minutes before. A `d-` room can be claimed **only before its first message**, and a lost
-claim can never be retaken.
+We trade in our own `d-` room because `close1` keeps only about 100 seconds of history now (200
+messages), and a message only counts if the referee reads it before it drops out. The referee
+has stalled for 13+ minutes before. A `d-` room can be claimed **only before its first message**,
+and a lost claim can never be retaken.
 
-**Claim: done.** Flopstar claimed the room from hoodwatch at 15:42:31 UTC on 25 September 2026.
-`room status` shows `owner note: did:key:z6MkjLp… (Flopstar)`. **Don't run `claim` again**: it
-would stop with "already has an owner note". What's left is posting the first message,
-registering the room, and turning on the keepalive, all in one sitting on the droplet.
-The first heartbeat starts a 12-hour clock: a room with only one message is deleted after 12
-hours, so the heartbeat timer has to be running by then.
+**Done (25 Sep 2026, UTC):**
+| Time | Step | How |
+|---|---|---|
+| 15:42:31 | Claim (owner note) | `room claim --post`, on hoodwatch |
+| 22:28:53 | First message | `systemctl start flopstar-signer@heartbeat` |
+| 22:29:13 | Registered in `close1` (seq 1039625) | `systemctl start flopstar-signer@register` |
+| 22:29:36 | Timers on; second heartbeat and a claim rewrite at once | `systemctl enable --now flopstar-heartbeat.timer flopstar-reclaim.timer` |
+| sweep 126 | Listed by the referee | `room status` |
+| 22:48:51 | Allow-list: the 64 tree DIDs | `systemctl start flopstar-signer@allow` (`room allow --post`) |
+| 22:52 | 64 tree `owner` posts, minted at sweep 131 | `systemctl start flopstar-tree-register` |
+| 22:57 | Round 0 posted; settled at sweep 132 | `systemctl enable --now flopstar-trader` |
 
-Run on the droplet as `flopstar`, with the key path set. Each command is a dry run without `--post`.
-```bash
-cd /opt/flopstar
-export FLOPSTAR_KEY_PATH=/etc/flopstar/keys/flopstar.pem FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
-sudo -E -u flopstar .venv/bin/flopstar room status             # owner must be Flopstar before going on
-sudo -E -u flopstar .venv/bin/flopstar room heartbeat --post   # first message in the room
-sudo -E -u flopstar .venv/bin/flopstar room register --post    # {"t":"room",...} in close1; saves evidence
-sudo -E -u flopstar .venv/bin/flopstar room status             # "listed by referee: sweep N" once listed
-```
-Then enable the timers straight away (§3.9). If `room status` doesn't show Flopstar as the
-owner, **stop**: the claim has lapsed or been taken, so post nothing in the room.
+**Don't run `claim` again**: it would stop with "already has an owner note". If `room status`
+ever doesn't show Flopstar as the owner, **stop**: the claim has lapsed or been taken, so post
+nothing in the room.
 
-**Claim deadline.** The owner note was last written at 15:42 UTC on 25 September, and a note
-with no write for 7 days is deleted. So it must be rewritten by **2 October 15:42 UTC**.
-- **On the droplet:** `flopstar-reclaim.timer` takes over once enabled.
-- **If the droplet isn't running by 1 October:** run `uv run flopstar room reclaim --post`
-  on hoodwatch (it prompts for the passphrase), and check that `room status` still shows the owner.
+**Claim deadline.** A note with no write for 7 days is deleted. `flopstar-reclaim.timer` rewrites
+it every 4 days (last: 22:29:38 on 25 Sep). Check `systemctl list-timers 'flopstar-*'` if in doubt.
 
 **Keepalive.**
 - **Why:** notes and rooms with no write for 7 days are deleted, and a room with a single message
@@ -223,8 +234,8 @@ with no write for 7 days is deleted. So it must be rewritten by **2 October 15:4
   - The close-1 rules allow it: "One operator may run many keys and hold several places";
     `identity_policy: any did:key`; the organiser "disqualifies nobody at discretion".
   - The one-DID rule came from the **sonnet** contest and doesn't apply here.
-- **Tree keys are close-1-only.** They sign only in `close1` and `d-flopstar-close1`, and never
-  anywhere else on technocore.chat.
+- **Tree keys are close-1-only.** They sign only in `d-flopstar-close1` (`TreeSigner` enforces
+  it), and never anywhere else on technocore.chat.
   - They register in `d-flopstar-close1` after the referee lists it, and each is allow-listed first.
   - After the lock, Flopstar signs and publishes a statement listing all 64 tree DIDs, in its
     room and in this repo.
@@ -256,18 +267,35 @@ with no write for 7 days is deleted. So it must be rewritten by **2 October 15:4
     `<room>|<nonce>|<text>`.
   - Nonces can be 19 digits: parse them as ints or strings, never floats.
   - Signed POSTs send `nonce` as a **digit string**.
-- **Flow posts** list `settled`/`void` as `[id, reason]` pairs, but they're **truncated**; an
-  `omitted` object counts what was left out. The full flow files can't be downloaded (issue #6),
-  so a full replay is blocked. Confirm our own trades with a local shadow fold of our keys.
+- **Flow posts** list `settled` ids and `void` `[id, reason]` pairs, but they're **truncated**;
+  an `omitted` object counts what was left out. The full flow files can't be downloaded (issue
+  #6), so a full replay is blocked. Our own trades are confirmed by the shadow fold. In practice
+  mints and settlements are heavily truncated but the void list is usually complete (no `void`
+  key in `omitted`), so "not in a complete void list, and `missed` empty" means settled.
+- **Price posts** carry `n`, `ref` (Hyperliquid's last trade: sweep n's close), `applied` (the
+  previous sweep's `ref.px`: the reference sweep n's trades were limited against), `for` (n+1),
+  `limits` for n+1, `global` and `age_s`. Sweep n cuts at 12:00 UTC + 5n minutes and posts about
+  13 s later.
+- **Trade signatures** (checked against live posts): the maker signs
+  `close-1|terms|<terms>` and the taker `close-1|accept|<terms>|<taker did>`, with `terms`
+  compact JSON with sorted keys. Many trades posted in `close1` carry invalid signatures.
+- **Field size:** 835,056 owners and 138 rooms at sweep 132. The positions top list is ±44.6
+  all-in pairs and the pnl top list dozens of identical scores: other trees are running.
 - **API behavior:**
   - `?since=S&limit=L` returns the **newest** L messages after S.
   - `/r/<room>/export` returns the whole retained history as raw JSONL and takes no parameters.
   - A 429 body says "retry after: Ns".
   - The server refuses the same text more than 5 times in 120 s (a 422).
+  - A message's nonce must be above the last nonce that key used in that room.
+  - A room keeps about 10 MiB of history; a message can be up to 4,096 characters.
+  - A signed POST replies in text (`# room … messages N range a..b`), not JSON; the newest
+    messages read right after a post sometimes don't include it yet, so the trader falls back to
+    the export.
 - **Claim notes:**
   - `room-owners` and `room-allow` are signed writes over `<ns>|<key>|<nonce>|<value>`.
   - Both share `/kv/room-nonce/<room>` as their replay counter; a new nonce must be above it.
   - The allow-list note is capped at 8,192 characters, which is enough for about 140 DIDs.
+    It is the DIDs separated by single spaces.
 
 ---
 
@@ -283,13 +311,16 @@ src/flopstar/
 ├── monitor.py     referee monitor: long-poll price, backfill gaps, sync the other rooms
 ├── signer.py      encrypted key loading, did derivation, PolicySigner
 ├── register.py    Flopstar's close-1 owner registration
-├── room.py        own room: status | verify | claim | register | heartbeat | reclaim
+├── room.py        own room: status | verify | claim | register | allow | heartbeat | reclaim
 ├── evidence.py    save our exact signed records from the room export
 ├── tree.py        key tree: HKDF derivation, sizing, round/split engine
 ├── dryrun.py      tree against the vendored fold over simulated paths
-└── treecli.py     tree: init | dids | dryrun
+├── treecli.py     tree: init | dids | dryrun
+├── treesigner.py  tree-key signing, policy-checked and logged
+├── hyperliquid.py latest xyz:NVDA trade, for pricing
+└── trader.py      the tree trader: shadow fold, reconciliation, posting, kill switch
 deploy/            systemd units, timers, same-host MIGRATION.md
-docs/TREE.md       key tree design and dry-run results
+docs/TREE.md       key tree design, dry-run results and how the trader runs it
 vendor/close-call/ challenge package at 66c1da3. Never edit it.
 ```
 
@@ -301,38 +332,58 @@ vendor/close-call/ challenge package at 66c1da3. Never edit it.
 | `flopstar room status` | no | network |
 | `flopstar room verify` | no | key + passphrase |
 | `flopstar room claim/register/heartbeat/reclaim [--post]` | only with `--post` | key + passphrase |
+| `flopstar room allow [--post]` | only with `--post` | `data/tree-dids.txt`; key + passphrase to post |
 | `flopstar tree init` | no | creates the seed; **refuses if one exists**. Do NOT run on the droplet; the seed comes from hoodwatch (§3.6). |
 | `flopstar tree dids` | no | seed |
 | `flopstar tree dryrun [paths]` | no | nothing (throwaway seed) |
+| `flopstar trader run` / `trader status` | no | paper mode: throwaway keys (`data/trader-paper.json`) |
+| `flopstar trader run --live` / `status --live` | run: yes | seed (`data/trader.json`) |
+| `flopstar trader register [--post]` | only with `--post` | seed (done; re-running skips registered keys) |
+
+Units (in `/etc/systemd/system`, copied from `deploy/`):
+
+| Unit | Does | Credential |
+|---|---|---|
+| `flopstar-monitor.service` | referee monitor | none |
+| `flopstar-signer@<action>.service` | one `room <action> --post` (heartbeat, reclaim, register, allow, verify) | passphrase |
+| `flopstar-heartbeat.timer` / `flopstar-reclaim.timer` | keepalive every 6 h / claim rewrite every 4 d | – |
+| `flopstar-tree-register.service` | one `trader register --post` | seed |
+| `flopstar-trader.service` | the live trader | seed |
+| `flopstar-trader-paper.service` | the paper trader | none |
+
+**Deploying a change:** commit in the working copy `/root/var/www/flopstar`, then
+```bash
+git -c safe.directory=/opt/flopstar -C /opt/flopstar pull --ff-only /root/var/www/flopstar main
+chown -R flopstar:flopstar /opt/flopstar
+cp /opt/flopstar/deploy/<changed units> /etc/systemd/system/ && systemctl daemon-reload
+systemctl restart flopstar-trader flopstar-trader-paper    # state is saved; they resume
+```
 
 Environment variables: `FLOPSTAR_KEY_PATH`, `FLOPSTAR_PASSPHRASE_FILE`, `FLOPSTAR_DATA_DIR`,
 `FLOPSTAR_TREE_SEED_PATH`.
 
-Checks: `uv run pytest -q` (14 tests), `uv run ruff check`, and `python3 vendor/close-call/scripts/verify.py`.
+Checks: `uv run pytest -q` (25 tests), `uv run ruff check`, and `python3 vendor/close-call/scripts/verify.py`.
 
 ---
 
 ## 8. Next work, in order
 
-1. **Droplet move** (§3), then **room heartbeat → register → timers** (§4). The claim is done; rewrite it by 2 Oct 15:42 UTC.
-2. **Wait for the referee to list the room** (`room status`).
-3. **Build the live trader,** per `docs/TREE.md` "Still to build":
-   - Hyperliquid price reader;
-   - shadow fold of our 64 keys;
-   - tree signer policy;
-   - registration sequence (allow-list → 64 owner posts);
-   - kill switch and alerts;
-   - a `flopstar-tree.service` unit with both credentials.
-4. **Owner reviews the trader's dry run, then round 0:** all 32 pairs in one sweep.
-5. **After the lock:** Flopstar signs a statement listing all 64 tree DIDs.
+1. **Watch round 1.** The first 3% move from 225.18 (≥ 232.94 or ≤ 218.42) is the first flip on
+   real prices: a close in one sweep, a reopen in the next. Check both settle.
+2. **Alerts.** A tripped kill switch only logs and writes `data/KILL`; add a push notification.
+3. **Shred hoodwatch's key and seed** (§3.10), once the seed's offline backup is confirmed.
+4. **After the lock:** Flopstar signs a statement listing all 64 tree DIDs, in its room and here.
 
 ---
 
 ## 9. Operations
 
 ```bash
-systemctl status flopstar-monitor; journalctl -u 'flopstar-*' -n 50
+systemctl status flopstar-monitor flopstar-trader; journalctl -u 'flopstar-*' -n 50
 cd /opt/flopstar && sudo -u flopstar env FLOPSTAR_DATA_DIR=/var/lib/flopstar/data .venv/bin/flopstar room status
+cd /opt/flopstar && sudo -u flopstar env FLOPSTAR_DATA_DIR=/var/lib/flopstar/data .venv/bin/flopstar trader status --live
+journalctl -u flopstar-trader -f | grep -v "HTTP Request"
+cat /var/lib/flopstar/data/KILL            # exists only if the kill switch tripped; holds the reason
 ```
 
 ```sql
@@ -358,13 +409,16 @@ SELECT json_extract(json_extract(raw_json, '$.text'), '$.t') AS t, COUNT(*) FROM
 - **`room status` owner isn't Flopstar:** the claim has lapsed or been taken. Don't post anything in the room.
 - **Note reads start with "!! UNTRUSTED CONTENT":** that banner is normal; `parse_note_body` strips it.
 - **The hook didn't run on a commit:** run `git config core.hooksPath .githooks` in that clone.
+- **`data/KILL` exists:** the trader has stopped signing. Read the reason and the journal, check
+  `trader status --live`, and delete the file only once the cause is understood. To stop it by
+  hand: `sudo -u flopstar touch /var/lib/flopstar/data/KILL`, or `systemctl stop flopstar-trader`.
 
 **Security checklist (droplet)**
-- [ ] Seed backed up offline before any move
-- [ ] SSH keys only; `ufw` allows only OpenSSH
-- [ ] `flopstar` user is non-root; key `0600 flopstar`; creds `0600 root`
-- [ ] Passphrase and seed exist only as `.cred` files
-- [ ] `flopstar-signer@verify` passes; `sudo -u nobody cat` on the key is refused
-- [ ] `core.hooksPath` set in `/opt/flopstar`
-- [ ] hoodwatch copies shredded after verification; only one monitor and one signer running
-- [ ] `git log --all -- '*.pem' '*.seed'` is empty
+- [x] Seed backed up offline before any move (owner, step 0)
+- [x] SSH keys only; `ufw` allows only OpenSSH
+- [x] `flopstar` user is non-root; key `0600 flopstar`; creds `0600 root`
+- [x] Passphrase and seed exist only as `.cred` files
+- [x] `flopstar-signer@verify` passes; `sudo -u nobody cat` on the key is refused
+- [x] `core.hooksPath` set in `/opt/flopstar`
+- [ ] hoodwatch copies shredded after verification (monitor stopped there; one signer running)
+- [x] `git log --all -- '*.pem' '*.seed'` is empty

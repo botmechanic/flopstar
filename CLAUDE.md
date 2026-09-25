@@ -8,8 +8,9 @@ Flopstar is a Python agent for FLOP Labs' "Close Call" contest (`close-1`, 25 Se
 technocore.chat: agents trade one NVDA future with each other, a referee settles signed trades
 every 5 minutes against Hyperliquid's `xyz:NVDA` price. `docs/HANDOFF.md` is the authoritative
 current-state document (deployment state, deadlines, secrets inventory, verified protocol facts,
-next work). `docs/TREE.md` is the design for the 64-key trading tree. Read those before operational
-work; the README's architecture section is out of date (it lists only the Phase 3 monitor modules).
+next work). `docs/TREE.md` is the design for the 64-key trading tree and how the trader runs it.
+Read those before operational work. **The tree trader is live** on the droplet `flopstar`
+(68.183.21.81), so changes to `trader.py`, `tree.py` or `treesigner.py` affect real positions.
 
 ## Commands
 
@@ -31,17 +32,19 @@ CLI (`src/flopstar/cli.py`, entry point `flopstar`):
 | `uv run flopstar monitor` | no; read-only, never touches the key |
 | `uv run flopstar verify-key` | no; decrypts key, checks DID against `flopstar.did` |
 | `uv run flopstar register [--post]` | only with `--post` |
-| `uv run flopstar room status\|verify\|claim\|register\|heartbeat\|reclaim [--post]` | only with `--post` |
+| `uv run flopstar room status\|verify\|claim\|register\|allow\|heartbeat\|reclaim [--post]` | only with `--post` |
 | `uv run flopstar tree dids` / `tree dryrun [paths]` | no (`dryrun` uses a throwaway seed) |
 | `uv run flopstar trader run` / `trader status` | no; paper mode, throwaway keys |
+| `uv run flopstar trader status --live` | no; reads the live state |
 | `uv run flopstar trader run --live` | yes: posts the tree's trades (tree seed) |
 | `uv run flopstar trader register [--post]` | only with `--post` (tree seed) |
 
 Every signing command is a dry run unless `--post` (or, for the trader, `--live`) is given.
 **Never run a `--post` or `--live` command, `room claim`, or `tree init` without explicit
-instruction from the user** — they publish signed messages
-to a live contest, and a room claim / the master seed can't be redone (`tree init` refuses if a
-seed exists; it must never be re-created).
+instruction from the user** — they publish signed messages to a live contest, and a room claim /
+the master seed can't be redone (`tree init` refuses if a seed exists; it must never be
+re-created). In practice the user runs signing steps themselves, as one-shot systemd units
+(`flopstar-signer@<action>`, `flopstar-tree-register`), so the commands stay short.
 
 Env vars: `FLOPSTAR_KEY_PATH` (default `~/.config/flopstar/flopstar.pem`),
 `FLOPSTAR_PASSPHRASE_FILE` (else prompts), `FLOPSTAR_DATA_DIR` (default `./data`),
@@ -51,7 +54,7 @@ Env vars: `FLOPSTAR_KEY_PATH` (default `~/.config/flopstar/flopstar.pem`),
 
 - **Two key roles.** The main Flopstar key (`flopstar.did`, passphrase-encrypted PEM outside the
   repo) holds identity, owns room `d-flopstar-close1`, and posts registrations/heartbeats — it
-  **never trades**. Trading is to be done by 64 tree keys derived via HKDF from a separate master
+  **never trades**. Trading is done by 64 tree keys derived via HKDF from a separate master
   seed (`tree.py`); the tree is always net-flat and splits every 3% move.
 - **Trader** (`trader.py`, TREE.md "The trader"): reads the referee from the monitor's SQLite
   store, rebuilds a *shadow fold* of our 64 keys each sweep (the vendored `Fold` over our own
@@ -84,6 +87,12 @@ Env vars: `FLOPSTAR_KEY_PATH` (default `~/.config/flopstar/flopstar.pem`),
   tree seed are delivered only as systemd encrypted credentials (`%d/...`). The monitor unit has no
   access to keys; `flopstar-signer@<action>.service` runs one `room <action> --post`, driven by the
   heartbeat (6 h) and reclaim (4 d) timers that keep the room and its owner claim alive.
+  `flopstar-trader.service` gets only the seed credential, never the owner key.
+- **Two clones on the droplet.** Develop and commit in `/root/var/www/flopstar` (pushes to GitHub
+  over HTTPS); the services run from `/opt/flopstar` (owned by `flopstar`), updated by
+  `git -c safe.directory=/opt/flopstar -C /opt/flopstar pull --ff-only /root/var/www/flopstar main`
+  then `chown -R flopstar:flopstar /opt/flopstar` and a service restart (HANDOFF §7). Runtime data
+  is `/var/lib/flopstar/data`, not `./data`.
 
 ## Secrets
 
