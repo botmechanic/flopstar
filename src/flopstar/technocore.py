@@ -17,6 +17,18 @@ REQUEST_TIMEOUT = 15   # Client timeout (slightly higher)
 MAX_CONCURRENT_LONGPOLLS = 1  # Only 4 per IP; use 1 to be safe
 
 
+UNTRUSTED_BANNER = "!! UNTRUSTED CONTENT"
+
+
+def parse_note_body(body: str) -> str:
+    """A note read is text/plain (even with ?format=json): an optional untrusted-content banner
+    line and a blank line, then the value and a newline. Return just the value."""
+    if body.startswith(UNTRUSTED_BANNER):
+        _, sep, rest = body.partition("\n\n")
+        body = rest if sep else ""
+    return body.removesuffix("\n")
+
+
 class TechnocoreClient:
     """Client for technocore.chat API."""
 
@@ -151,7 +163,7 @@ class TechnocoreClient:
         if response.status_code == 429:
             await self._handle_rate_limit(response)
         response.raise_for_status()
-        return response.text
+        return parse_note_body(response.text)
 
     async def set_note_signed(
         self, namespace: str, key: str, did: str, sig: str, nonce: int, value: str,

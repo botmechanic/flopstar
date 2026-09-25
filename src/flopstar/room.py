@@ -30,7 +30,9 @@ def load_signer() -> PolicySigner:
 async def note_nonce(client: TechnocoreClient) -> int:
     """Next nonce for ownership notes: above the room's shared counter and the clock."""
     current = await client.get_note("room-nonce", ROOM)
-    floor = int(current.strip()) if current and current.strip().isdigit() else 0
+    if current is not None and not current.strip().isdigit():
+        raise SystemExit(f"unexpected room-nonce value {current!r}; not signing")
+    floor = int(current) if current is not None else 0
     return max(floor + 1, time.time_ns() // 1_000_000)
 
 
