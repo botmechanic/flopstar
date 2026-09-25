@@ -506,14 +506,19 @@ def find_record(response: httpx.Response, did: str, nonce: int) -> dict | None:
 
 async def find_in_room(client: TechnocoreClient, did: str, nonce: int | None,
                        trade_id: str | None = None) -> dict | None:
-    for m in reversed(await client.export_room(config.OWN_ROOM)):
-        if m.get("from") != did:
-            continue
-        if nonce is not None and str(m.get("nonce")) == str(nonce):
-            return m
-        if trade_id is not None and f'"id":"{trade_id}"' in m.get("text", ""):
-            return m
-    return None
+    def match(messages: list[dict]) -> dict | None:
+        for m in reversed(messages):
+            if m.get("from") != did:
+                continue
+            if nonce is not None and str(m.get("nonce")) == str(nonce):
+                return m
+            if trade_id is not None and f'"id":"{trade_id}"' in m.get("text", ""):
+                return m
+        return None
+
+    # the newest messages first (one cheap read); the whole ring only if that misses
+    return (match(await client.get_room(config.OWN_ROOM, limit=100))
+            or match(await client.export_room(config.OWN_ROOM)))
 
 
 async def run_trader(args: list[str]) -> None:
