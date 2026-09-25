@@ -1,0 +1,26 @@
+# The tree trader in paper mode: throwaway keys, signs and posts nothing. It runs the tree on
+# the real price path against the real referee, for review before going live.
+[Unit]
+Description=Flopstar close-1 tree trader (paper)
+After=network-online.target flopstar-monitor.service
+Wants=network-online.target flopstar-monitor.service
+
+[Service]
+Type=simple
+User=flopstar
+Group=flopstar
+WorkingDirectory=/opt/flopstar
+Environment=FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
+ExecStart=/opt/flopstar/.venv/bin/flopstar trader run
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/flopstar/data
+InaccessiblePaths=/etc/flopstar/keys /etc/flopstar/creds
+
+[Install]
+WantedBy=multi-user.target

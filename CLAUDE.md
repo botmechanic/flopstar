@@ -33,9 +33,13 @@ CLI (`src/flopstar/cli.py`, entry point `flopstar`):
 | `uv run flopstar register [--post]` | only with `--post` |
 | `uv run flopstar room status\|verify\|claim\|register\|heartbeat\|reclaim [--post]` | only with `--post` |
 | `uv run flopstar tree dids` / `tree dryrun [paths]` | no (`dryrun` uses a throwaway seed) |
+| `uv run flopstar trader run` / `trader status` | no; paper mode, throwaway keys |
+| `uv run flopstar trader run --live` | yes: posts the tree's trades (tree seed) |
+| `uv run flopstar trader register [--post]` | only with `--post` (tree seed) |
 
-Every signing command is a dry run unless `--post` is given. **Never run a `--post` command, `room
-claim`, or `tree init` without explicit instruction from the user** — they publish signed messages
+Every signing command is a dry run unless `--post` (or, for the trader, `--live`) is given.
+**Never run a `--post` or `--live` command, `room claim`, or `tree init` without explicit
+instruction from the user** — they publish signed messages
 to a live contest, and a room claim / the master seed can't be redone (`tree init` refuses if a
 seed exists; it must never be re-created).
 
@@ -48,8 +52,15 @@ Env vars: `FLOPSTAR_KEY_PATH` (default `~/.config/flopstar/flopstar.pem`),
 - **Two key roles.** The main Flopstar key (`flopstar.did`, passphrase-encrypted PEM outside the
   repo) holds identity, owns room `d-flopstar-close1`, and posts registrations/heartbeats — it
   **never trades**. Trading is to be done by 64 tree keys derived via HKDF from a separate master
-  seed (`tree.py`); the tree is always net-flat and splits every 3% move. The live trader is
-  **not built yet** (see TREE.md "Still to build").
+  seed (`tree.py`); the tree is always net-flat and splits every 3% move.
+- **Trader** (`trader.py`, TREE.md "The trader"): reads the referee from the monitor's SQLite
+  store, rebuilds a *shadow fold* of our 64 keys each sweep (the vendored `Fold` over our own
+  mints/trades — our ground truth, since flow posts are truncated), reconciles it against the
+  referee, and steps the `Tree` once per sweep inside a safe posting window. Anomalies write a
+  kill-switch file (`data/KILL`, paper `data/KILL-paper`) and it then signs nothing. State is
+  `data/trader.json`. Tree keys sign only through `treesigner.TreeSigner`. Sweep n cuts at
+  12:00 UTC + 5n min; the price post's `applied` is sweep n's limit reference and `ref.px` its
+  close.
 - **All owner-key signing goes through `signer.PolicySigner`**, which whitelists rooms (`close1`,
   `d-flopstar-close1`), note namespaces (`room-owners`/`room-allow` for our room only) and message
   types (`owner`, `room`, `trade`, `heartbeat`), and appends every signature to

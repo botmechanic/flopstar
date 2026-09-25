@@ -83,6 +83,19 @@ class Tree:
     pending: list[tuple[str, str]] = field(default_factory=list)   # (flipper, new side)
     log: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict:
+        return {"dids": self.dids, "live": self.live, "mirror": self.mirror,
+                "round_open": None if self.round_open is None else str(self.round_open),
+                "splits": self.splits, "rounds": self.rounds,
+                "pending": [list(p) for p in self.pending], "log": self.log}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Tree:
+        return cls(dids=d["dids"], live=d["live"], mirror=d["mirror"],
+                   round_open=None if d["round_open"] is None else Decimal(d["round_open"]),
+                   splits=d["splits"], rounds=d["rounds"],
+                   pending=[tuple(p) for p in d["pending"]], log=d["log"])
+
     def step(self, n: int, px: Decimal, cash: dict, position: dict) -> list[Intent]:
         """Called once per sweep n with the reference price and our keys' settled state;
         returns the trades to post for sweep n+1."""

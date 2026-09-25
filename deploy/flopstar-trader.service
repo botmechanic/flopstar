@@ -1,0 +1,30 @@
+# The live tree trader. Gets the tree master seed as an encrypted credential and nothing else:
+# never the Flopstar owner key or its passphrase. Reads the referee from the monitor's store.
+# Trips a kill switch (/var/lib/flopstar/data/KILL) on any anomaly and then signs nothing.
+[Unit]
+Description=Flopstar close-1 tree trader (LIVE)
+After=network-online.target flopstar-monitor.service
+Wants=network-online.target
+Requires=flopstar-monitor.service
+
+[Service]
+Type=simple
+User=flopstar
+Group=flopstar
+WorkingDirectory=/opt/flopstar
+Environment=FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
+Environment=FLOPSTAR_TREE_SEED_PATH=%d/close1-master-seed
+LoadCredentialEncrypted=close1-master-seed:/etc/flopstar/creds/close1-master-seed.cred
+ExecStart=/opt/flopstar/.venv/bin/flopstar trader run --live
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/flopstar/data
+InaccessiblePaths=/etc/flopstar/keys
+
+[Install]
+WantedBy=multi-user.target

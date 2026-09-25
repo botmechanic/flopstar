@@ -1,7 +1,7 @@
 # Close-1 key tree: design and dry run
 
-Status: **design and dry run only.** No tree key is registered, allow-listed or trading.
-Review this before any of that happens.
+Status: **trader built and running in paper mode.** No tree key is registered, allow-listed or
+trading. Review this before any of that happens.
 
 ## Why a tree
 
@@ -102,21 +102,40 @@ for four times the keys.
   Flow posts are truncated (`omitted`), so live confirmation has to come from a local shadow
   fold of our 64 keys, cross-checked against the pnl and positions top lists.
 
-## Still to build before going live
+## The trader (built, paper-tested; not live)
 
-1. **Hyperliquid price reader** for pricing trades (info endpoint, `xyz:NVDA` trades). Round
-   triggers use the referee's verified reference.
-2. **Shadow fold.** Replay our own keys' trades through the vendored fold every sweep; that
-   replay is our ground truth for cash and positions. Stop and alert on any mismatch with
-   referee posts.
-3. **Tree signer policy.** Tree keys sign only in `d-flopstar-close1` (plus `close1` if ever
-   needed), with message types `owner` and `trade`, and every signature logged.
-4. **Registration.**
-   - Wait for the referee to list `d-flopstar-close1` in a flow post.
-   - Flopstar writes the `room-allow` note with all 64 DIDs (about 3.7k of the 8,192 characters).
-   - Each tree key posts its own `owner` message in the room. That's 64 writes against a limit
-     of 300 a minute.
-   - Round 0 goes the sweep after all 64 mints, with all 32 pairs in the same sweep.
-5. **Kill switch and alerts.** Stop on any void, signature failure or funds shortfall.
-6. **After the lock.** Flopstar signs a statement listing all 64 tree DIDs, published in its
-   room and in this repo.
+`src/flopstar/trader.py` runs the tree against the live referee: `flopstar trader run` (paper:
+throwaway keys, signs and posts nothing) or `run --live` (the real tree keys, via
+`deploy/flopstar-trader.service`). `flopstar trader status [--live]` shows its state.
+
+1. **Hyperliquid price reader** (`hyperliquid.py`): the latest `xyz:NVDA` trade prices each
+   trade when posted. Round triggers use the referee's verified reference. A trade is not posted
+   if Hyperliquid is more than 4.5% from the reference (the limit is 5%).
+2. **Shadow fold.** Every sweep, our keys' mints and trades are replayed through the vendored
+   `Fold`, using the referee's `applied` (limit reference) and `ref.px` (close) for that sweep.
+   That is our ground truth for cash and positions. Each sweep is then checked against the
+   referee: any of our ids in the flow `void` list, our room in `missed`, or a pnl/positions
+   top-list entry for one of our keys that differs from the shadow fold trips the kill switch.
+   Our ids found in the (truncated) `settled` list are marked confirmed.
+3. **Tree signer policy** (`treesigner.py`): tree keys sign only in `d-flopstar-close1`, only
+   `owner` (naming the signing key) and `trade` (both sides tree keys, taker named, poster a
+   party), and log every signature to `data/tree-signatures.log`.
+4. **Timing.** The trader steps once per sweep, only when the referee is on time and all our
+   posted trades have been applied, and posts only between 45 s after a sweep's cut and 75 s
+   before the next, so every trade lands in the next sweep (`until` = that sweep + 1). A sweep
+   n cuts at 12:00 UTC + 5n minutes; a message applies at the first cut after its stamp.
+5. **Pre-check.** The planned trades are run through a copy of the shadow fold before posting;
+   if any would void, nothing is posted and the kill switch trips.
+6. **Kill switch.** `data/KILL` (paper: `data/KILL-paper`). While it exists nothing is signed; the
+   loop keeps reconciling. Delete it to resume after finding out why it tripped. The state
+   (tree, trades, nonces) is `data/trader.json`, saved before and after every post.
+7. **Registration.** `flopstar trader register [--post]` posts each tree key's `owner` message
+   in our room, only once the referee lists the room and every tree key is allow-listed.
+
+Still to do:
+- **Allow-list write.** Flopstar writing the `room-allow` note with the 64 tree DIDs (about
+  3.7k of 8,192 characters). Not built yet.
+- **Alerts.** The kill switch only logs (journal) and writes the file; nothing pushes a
+  notification yet.
+- **After the lock.** Flopstar signs a statement listing all 64 tree DIDs, published in its
+  room and in this repo.
