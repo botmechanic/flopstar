@@ -7,6 +7,7 @@ before day 6. Every signing command is a dry run unless --post is given.
 """
 
 import json
+import re
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -16,8 +17,11 @@ from .didkey import verify_signature
 from .evidence import save_record
 from .signer import PolicySigner, compact, expected_did, load_private_key
 from .technocore import TechnocoreClient
+from .tree import TREE_SIZE
 
 ROOM = config.OWN_ROOM
+NOTE_CHARS = 8192   # technocore.chat's note limit
+DID = re.compile(r"did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}")   # as the fold checks it
 
 
 def load_signer() -> PolicySigner:
@@ -34,6 +38,51 @@ async def note_nonce(client: TechnocoreClient) -> int:
         raise SystemExit(f"unexpected room-nonce value {current!r}; not signing")
     floor = int(current) if current is not None else 0
     return max(floor + 1, time.time_ns() // 1_000_000)
+
+
+def tree_allow_list() -> list[str]:
+    """The tree's public DIDs, in index order, from data/tree-dids.txt (`flopstar tree dids`)."""
+    lines = (config.get_data_dir() / "tree-dids.txt").read_text().splitlines()
+    dids = [line.split()[1] for line in lines if line.strip()]
+    if len(dids) != TREE_SIZE or len(set(dids)) != TREE_SIZE or not all(
+            DID.fullmatch(d) for d in dids):
+        raise SystemExit(f"tree-dids.txt must hold {TREE_SIZE} distinct did:keys")
+    return dids
+
+
+async def write_allow_note(post: bool) -> None:
+    """Allow-list the tree keys in our room: one space-separated note, owner-signed.
+    The dry run needs no key; only --post loads it."""
+    dids = tree_allow_list()
+    value = " ".join(dids)
+    if len(value) > NOTE_CHARS:
+        raise SystemExit(f"allow-list is {len(value)} characters, over {NOTE_CHARS}")
+    async with TechnocoreClient() as client:
+        owner = (await client.get_note("room-owners", ROOM) or "").strip()
+        if owner != expected_did():
+            raise SystemExit(f"{ROOM} owner is {owner!r}, not Flopstar; not writing the allow-list")
+        current = await client.get_note("room-allow", ROOM)
+        if current is not None and current.split() == dids:
+            print(f"allow-list already holds these {len(dids)} keys; nothing to do")
+            return
+        print(f"note:    room-allow/{ROOM}")
+        print(f"current: {len(current.split()) if current else 0} keys")
+        print(f"new:     {len(dids)} tree keys, {len(value)} of {NOTE_CHARS} characters")
+        print(f"first:   {dids[0]}\nlast:    {dids[-1]}")
+        if not post:
+            print("dry run: nothing signed or sent. Re-run with --post.")
+            return
+        signer = load_signer()
+        nonce = await note_nonce(client)
+        sig = signer.sign_note("room-allow", ROOM, nonce, value)
+        response = await client.set_note_signed("room-allow", ROOM, signer.did, sig, nonce, value)
+        print(f"nonce: {nonce}\nHTTP {response.status_code}: {response.text[:200]}")
+        readback = await client.get_note("room-allow", ROOM)
+        ok = readback is not None and readback.split() == dids
+        print(f"read back: {len(readback.split()) if readback else 0} keys -> "
+              f"{'MATCH' if ok else 'MISMATCH'}")
+        if not ok:
+            raise SystemExit(1)
 
 
 async def write_owner_note(post: bool, if_absent: bool) -> None:
@@ -119,6 +168,8 @@ async def run_room(args: list[str]) -> None:
     elif command == "register":
         text = compact({"t": "room", "season": config.SEASON_ID, "room": ROOM})
         await post_message("close1", text, post, str(data / "registration-room.jsonl"))
+    elif command == "allow":
+        await write_allow_note(post)
     elif command == "heartbeat":
         await post_message(ROOM, heartbeat_text(), post, None)
     elif command == "status":
@@ -126,4 +177,4 @@ async def run_room(args: list[str]) -> None:
     elif command == "verify":
         print(f"key loads and matches flopstar.did: {load_signer().did}")
     else:
-        raise SystemExit("usage: flopstar room [status|verify|claim|register|heartbeat|reclaim] [--post]")
+        raise SystemExit("usage: flopstar room [status|verify|claim|register|allow|heartbeat|reclaim] [--post]")

@@ -161,3 +161,15 @@ def test_limits_breach_on_hyperliquid_skips_the_step(paper, monkeypatch):
     monkeypatch.setattr(trader, "last_trade", far)
     asyncio.run(t.step(100, None, None))
     assert t.state["trades"] == [] and t.state["stepped"] is None and t.killed() is None
+
+
+def test_tree_allow_list_reads_and_checks_tree_dids(tmp_path, monkeypatch):
+    from flopstar.room import NOTE_CHARS, tree_allow_list
+    monkeypatch.setenv("FLOPSTAR_DATA_DIR", str(tmp_path))
+    dids = tree_dids(SEED)
+    (tmp_path / "tree-dids.txt").write_text("".join(f"{i} {d}\n" for i, d in enumerate(dids)))
+    assert tree_allow_list() == dids
+    assert len(" ".join(dids)) < NOTE_CHARS
+    (tmp_path / "tree-dids.txt").write_text(f"0 {dids[0]}\n1 {dids[0]}\n")
+    with pytest.raises(SystemExit):
+        tree_allow_list()
