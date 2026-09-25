@@ -214,10 +214,13 @@ Future: Trading Agent
 
 1. **Startup**: Syncs all referee rooms from sequence 0 (or last known)
 2. **Long-poll**: Only `d-close1-price` (10s timeout, returns immediately if new data)
-3. **Trigger**: On new price message → sync all other rooms once
-4. **Gap detection**: If `first_seq > last_seq + 1` → backfill via export API
-5. **Rate limiting**: Honors 429, backs off 60s
-6. **Signature verification**: Every message verified against referee DID before storage
+3. **Trigger**: On new price message → wait 15s (the other four rooms post 2–8s after the price room) → sync them
+4. **Gap detection**: `?since=S` returns the NEWEST messages after S, so if `first_seq > S + 1` the
+   monitor backfills from `/r/<room>/export` (the whole retained ring as raw JSONL; no query params)
+5. **Rate limiting**: Honors 429, backs off for the "retry after: Ns" in the body (+1s)
+6. **Signature verification**: Every message verified against referee DID before storage.
+   Records carry the signer in `from`; `sig` is 86 chars of unpadded base64url over
+   `<room>|<nonce>|<text>`. Nonces can be 19 digits: keep them as ints/strings, never floats.
 
 **Key constraint**: Only 4 concurrent long-polls per IP. We use 1 to stay safe.
 
@@ -255,7 +258,7 @@ Location: `$FLOPSTAR_DATA_DIR/flopstar.db` (default: `./data/flopstar.db`)
 | Room | Purpose | Long-Poll? |
 |------|---------|------------|
 | `d-close1-price` | Reference price, limits, global price | **YES** |
-| `d-close1-flow` | Trade outcomes (counts only) | No |
+| `d-close1-flow` | Trade outcomes (truncated lists + `omitted` counts) | No |
 | `d-close1-positions` | Open interest, positions | No |
 | `d-close1-pnl` | PnL and leaderboard | No |
 | `d-close1-state` | State roots | No |
@@ -271,9 +274,14 @@ Close-1 **does not have a signed launch record yet**. Monitor logs loud warning 
 
 ### Known Issue: Flow Files Not Downloadable
 
-**Investigation result**: `d-close1-flow` posts contain only **counts** (`settled: N`, `void: M`). Per-trade outcomes with reasons are in flow **files** (referenced by hash), which are **not downloadable** (issue #6 on challenge repo).
+**Investigation result** (revised 2026-09-25 against live posts): `d-close1-flow` posts list
+per-trade outcomes as `settled`/`void` arrays of `[id, reason]`, but they are **truncated**: an
+`omitted` object counts what was left out (e.g. sweep 32: `{"mints":19414,"settled":1237,"void":6}`).
+Full per-sweep records are in the flow **files** (referenced by hash), which are **not downloadable**
+(issue #6 on challenge repo).
 
-**Implication**: Cannot do full-ledger replay from flow room alone. Would need to track all trades from trading rooms to replay with vendored fold.
+**Implication**: Cannot do full-ledger replay from the flow room alone. You can still confirm our own
+trade ids when they appear in the posted arrays, but absence proves nothing while `omitted` is non-zero.
 
 ---
 
@@ -317,6 +325,10 @@ du -sh /var/lib/flopstar/data/
 - Monitor logs for "Rate limited (429)" messages
 - Automatic 60s backoff, will retry
 - Check for other processes hitting technocore.chat from same IP
+
+**Referee lag**: sweeps are not always on the 5-minute clock. On 2026-09-25 sweep 32 (due 14:45)
+posted at 14:48, and nothing followed for 13+ minutes. A quiet long-poll during such a stall is
+normal; compare `ts` of the latest `d-close1-price` record with the clock before suspecting the monitor.
 
 **Signature verification failures**:
 - **CRITICAL**: Invalid signatures mean compromised data or wrong referee DID
@@ -502,15 +514,13 @@ ORDER BY indexed_at DESC
 LIMIT 10;
 
 -- Check for gaps
-SELECT room, seq,
-       LAG(seq) OVER (PARTITION BY room ORDER BY seq) as prev_seq
-FROM messages
-WHERE seq != prev_seq + 1 AND prev_seq IS NOT NULL;
+SELECT room, prev_seq, seq FROM (
+    SELECT room, seq, LAG(seq) OVER (PARTITION BY room ORDER BY seq) AS prev_seq
+    FROM messages
+) WHERE prev_seq IS NOT NULL AND seq != prev_seq + 1;
 
 -- Referee messages by type
-SELECT
-    json_extract(raw_json, '$.text') ->> '$.t' as msg_type,
-    COUNT(*)
+SELECT json_extract(json_extract(raw_json, '$.text'), '$.t') AS msg_type, COUNT(*)
 FROM messages
 WHERE room LIKE 'd-close1-%'
 GROUP BY msg_type;

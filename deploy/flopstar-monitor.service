@@ -1,0 +1,25 @@
+# Read-only referee monitor. Gets no key and no credentials.
+[Unit]
+Description=Flopstar close-1 referee monitor (read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flopstar
+Group=flopstar
+WorkingDirectory=/opt/flopstar
+Environment=FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
+ExecStart=/opt/flopstar/.venv/bin/flopstar monitor
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/flopstar/data
+InaccessiblePaths=/etc/flopstar/keys /etc/flopstar/creds
+
+[Install]
+WantedBy=multi-user.target

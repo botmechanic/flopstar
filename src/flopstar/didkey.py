@@ -1,5 +1,7 @@
 """DID:key handling and Ed25519 signature verification."""
 
+import base64
+
 import base58
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -43,13 +45,14 @@ def verify_signature(
     room: str,
     nonce: str,
     text: str,
-    signature_hex: str,
+    signature: str,
 ) -> bool:
     """
     Verify an Ed25519 signature over the exact message format.
 
     Message format: "<room>|<nonce>|<text>"
     Nonce is kept as exact digit string (can exceed 2^53).
+    Signature is 86 characters of unpadded base64url (technocore.chat's did:key lane).
 
     Returns True if signature is valid, False otherwise.
     """
@@ -62,9 +65,11 @@ def verify_signature(
     message = f"{room}|{nonce}|{text}"
     message_bytes = message.encode('utf-8')
 
-    # Decode signature from hex
+    # Decode signature from unpadded base64url
+    if len(signature) != 86:
+        return False
     try:
-        signature_bytes = bytes.fromhex(signature_hex)
+        signature_bytes = base64.urlsafe_b64decode(signature + "==")
     except ValueError:
         return False
 

@@ -25,6 +25,9 @@ LONGPOLL_ROOM = "d-close1-price"
 # Trading rooms (for reading signed trades)
 TRADING_ROOMS = ["close1"]
 
+# Our own d- room: only the owner and allow-listed keys can post in it
+OWN_ROOM = "d-flopstar-close1"
+
 # Paths
 def get_key_path() -> Path:
     """Get the path to the private key (NOT used in monitor mode)."""

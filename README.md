@@ -84,21 +84,19 @@ Messages are stored in `./data/flopstar.db` (configurable via `FLOPSTAR_DATA_DIR
 The monitor respects technocore.chat's limits:
 - Only 4 concurrent long-polls per IP allowed
 - We use 1 long-poll (on `d-close1-price`)
-- Handles 429 responses and "wait: not held" messages
-- Automatically backs off for 60s when rate limited
+- Handles 429 responses, backing off for the "retry after" the body names
 
 ## Investigation: Flow Room Data
 
 **Question**: Do `d-close1-flow` posts list per-trade-id outcomes (settled/void + reason), or only counts?
 
-**Answer**: **Only counts**. The flow room posts contain:
+**Answer** (revised against live posts): per-trade `[id, reason]` lists, but **truncated**:
 ```json
-{"t":"flow","n":1234,"mints":[…],"rooms":[…],"settled":"42","void":"17","missed":[…],"file":"<hash>"}
+{"t":"flow","n":32,"mints":[],"rooms":[…],"settled":[],"void":[["2ff3e772","funds"],…],"missed":[],"omitted":{"mints":19414,"settled":1237,"void":6},"file":"<hash>"}
 ```
 
-The `settled` and `void` fields are counts only. Per-trade outcomes with reasons are in the **flow file** referenced by the hash, not in the room post.
-
-**Implication**: Full-ledger replay is blocked (flow files not downloadable, issue #6). Agents would need to track all trades from trading rooms to replay with the fold.
+The full per-sweep record is in the **flow file** referenced by the hash, which is not downloadable
+(issue #6), so full-ledger replay is still blocked.
 
 ## Architecture
 
@@ -190,7 +188,7 @@ See LICENSE and NOTICE files. The vendored challenge code retains its original l
 
 Referee rooms:
 - `d-close1-price` - Reference prices and limits
-- `d-close1-flow` - Trade outcomes (counts only)
+- `d-close1-flow` - Mints, rooms, trade outcomes (truncated lists + `omitted` counts)
 - `d-close1-positions` - Open interest
 - `d-close1-pnl` - PnL and leaderboard
 - `d-close1-state` - State roots
