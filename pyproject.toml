@@ -1,0 +1,42 @@
+[project]
+name = "flopstar"
+version = "0.1.0"
+description = "Technocore Close Call contest agent"
+readme = "README.md"
+authors = [
+    { name = "botmechanic", email = "fode@alchemexlabs.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "base58>=2.1.1",
+    "cryptography>=42.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.3.0",
+]
+
+[project.scripts]
+flopstar = "flopstar.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["vendor"]

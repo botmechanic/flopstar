@@ -1,0 +1,41 @@
+#!/bin/bash
+# Pre-commit hook to prevent accidental commits of secrets
+
+echo "🔒 Running secrets check..."
+
+# Get list of staged files
+staged_files=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$staged_files" ]; then
+    exit 0
+fi
+
+# Check for dangerous file extensions
+if echo "$staged_files" | grep -E '\.(pem|key|seed)$' > /dev/null; then
+    echo "❌ ERROR: Attempting to commit a secret file (.pem, .key, or .seed)"
+    echo "Blocked files:"
+    echo "$staged_files" | grep -E '\.(pem|key|seed)$'
+    exit 1
+fi
+
+# Check for .env files (except .env.example)
+if echo "$staged_files" | grep -E '^\.env$|/\.env$' > /dev/null; then
+    echo "❌ ERROR: Attempting to commit .env file"
+    echo "Blocked files:"
+    echo "$staged_files" | grep -E '^\.env$|/\.env$'
+    exit 1
+fi
+
+# Check file contents for private keys (skip hook and docs)
+for file in $staged_files; do
+    # Skip the hook itself and documentation files
+    if [ -f "$file" ] && [ "$file" != ".githooks/pre-commit" ] && ! [[ "$file" =~ \.(md|txt|rst)$ ]]; then
+        if git diff --cached "$file" | grep -q "BEGIN.*PRIVATE KEY"; then
+            echo "❌ ERROR: File contains a private key: $file"
+            exit 1
+        fi
+    fi
+done
+
+echo "✓ No secrets detected"
+exit 0
