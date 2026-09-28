@@ -2,7 +2,8 @@
 
 **Project**: Flopstar, an agent for FLOP Labs' Close Call contest (`close-1`) on technocore.chat
 **Repository**: https://github.com/subloop-xyz/flopstar (private)
-**Written**: 25 September 2026, 15:40 UTC; **updated 25 September 2026, 23:05 UTC** after the move
+**Written**: 25 September 2026, 15:40 UTC; **updated 25 September 2026, 23:05 UTC** after the move; **28 September 2026, 19:50 UTC** after
+the round-1 split
 **Host**: droplet `flopstar` (68.183.21.81), running only Flopstar
 **Previous host**: `hoodwatch` (167.99.238.68): decommissioned for Flopstar on 25 Sep; its repo
 clone was deleted and its copies of the key and seed shredded (owner-confirmed)
@@ -13,7 +14,7 @@ undone.
 
 ---
 
-## 1. State (25 Sep 2026, 23:05 UTC)
+## 1. State (28 Sep 2026, 19:50 UTC)
 
 | Item | State |
 |---|---|
@@ -23,7 +24,7 @@ undone.
 | Own room `d-flopstar-close1` | Claimed; first message 22:28:53 UTC; registered in `close1` (seq 1039625, evidence in `data/registration-room.jsonl`); **listed by the referee at sweep 126**. Heartbeat (6 h) and reclaim (4 d) timers on; the claim was last rewritten 22:29:38 UTC, so it lapses only if no rewrite happens by 2 Oct 22:29 UTC. |
 | Allow-list | The 64 tree DIDs, written by Flopstar at 22:48:51 UTC (3,647 of 8,192 characters). |
 | Key tree | 64 keys registered in our room at 22:52 UTC, **minted at sweep 131**. |
-| Tree trader | **Live** (`flopstar-trader.service`). Round 0 (32 pairs, 43.08 each at 225.19) settled at sweep 132 with no voids. Round 1 triggers at ±3% from the round-0 reference 225.18. |
+| Tree trader | **Live** (`flopstar-trader.service`). Round 0 (32 pairs, 43.08 each at 225.19) settled at sweep 132 with no voids. **Round 1 split done**: +3.06% from 225.18 at sweep 883 (round open 232.08); 16 closes at 232.62 (sweep 884) and 16 reopens, short 39.55 at 232.77 (sweep 885), all settled with no voids. 32 keys live (16 stayers long 43.08, 16 flippers short 39.55); 64 trades in all. Round 2 triggers at ±3% from 232.08 (≥ 239.05 or ≤ 225.11). The paper trader matches. |
 | Paper trader | `flopstar-trader-paper.service`: the same engine on throwaway keys, posting nothing, for comparison. |
 | Secrets hook | Enabled in both clones (`/root/var/www/flopstar`, `/opt/flopstar`). |
 
@@ -214,6 +215,7 @@ and a lost claim can never be retaken.
 | 22:48:51 | Allow-list: the 64 tree DIDs | `systemctl start flopstar-signer@allow` (`room allow --post`) |
 | 22:52 | 64 tree `owner` posts, minted at sweep 131 | `systemctl start flopstar-tree-register` |
 | 22:57 | Round 0 posted; settled at sweep 132 | `systemctl enable --now flopstar-trader` |
+| 28 Sep 13:36 | Round 1 split: closes settled at sweep 884, reopens (13:41) at sweep 885 | the trader, unattended |
 
 **Don't run `claim` again**: it would stop with "already has an owner note". If `room status`
 ever doesn't show Flopstar as the owner, **stop**: the claim has lapsed or been taken, so post
@@ -374,8 +376,8 @@ Checks: `uv run pytest -q` (25 tests), `uv run ruff check`, and `python3 vendor/
 
 ## 8. Next work, in order
 
-1. **Watch round 1.** The first 3% move from 225.18 (≥ 231.94 or ≤ 218.42) is the first flip on
-   real prices: a close in one sweep, a reopen in the next. Check both settle.
+1. **Watch round 2.** Round 1 split cleanly on 28 Sep (sweeps 883–885). The next 3% move from
+   232.08 (≥ 239.05 or ≤ 225.11) splits the 32 live keys to 16. Check the closes and reopens settle.
 2. **Alerts.** A tripped kill switch only logs and writes `data/KILL`; add a push notification.
 3. **After the lock:** Flopstar signs a statement listing all 64 tree DIDs, in its room and here.
 

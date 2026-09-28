@@ -2,7 +2,9 @@
 
 Status: **live since 25 Sep 2026.** The 64 tree keys are allow-listed in `d-flopstar-close1`
 and were minted at sweep 131. Round 0 (32 pairs of 43.08 at 225.19) settled at sweep 132 with no
-voids; round 1 waits for a 3% move from the round-0 reference 225.18.
+voids. Round 1 split at sweeps 883–885 (+3.06% from 225.18; closes at 232.62, reopens short 39.55
+at 232.77), all settled with no voids; 32 keys are live and round 2 waits for a 3% move from
+232.08.
 
 ## Why a tree
 
@@ -137,8 +139,6 @@ tree keys; `flopstar-trader.service`). `flopstar trader status [--live]` shows i
    allow-listed.
 
 Still to do:
-- **Flips on real prices.** Unit-tested and dry-run, but not yet seen live: the first comes with
-  round 1.
 - **Alerts.** The kill switch only logs (journal) and writes the file; nothing pushes a
   notification yet.
 - **After the lock.** Flopstar signs a statement listing all 64 tree DIDs, published in its
