@@ -32,7 +32,7 @@ CLI (`src/flopstar/cli.py`, entry point `flopstar`):
 | `uv run flopstar monitor` | no; read-only, never touches the key |
 | `uv run flopstar verify-key` | no; decrypts key, checks DID against `flopstar.did` |
 | `uv run flopstar register [--post]` | only with `--post` |
-| `uv run flopstar room status\|verify\|claim\|register\|allow\|heartbeat\|reclaim [--post]` | only with `--post` |
+| `uv run flopstar room status\|verify\|claim\|register\|allow\|heartbeat\|reclaim\|statement [--post]` | only with `--post` |
 | `uv run flopstar tree dids` / `tree dryrun [paths]` | no (`dryrun` uses a throwaway seed) |
 | `uv run flopstar trader run` / `trader status` | no; paper mode, throwaway keys |
 | `uv run flopstar trader status --live` | no; reads the live state |
@@ -66,7 +66,7 @@ Env vars: `FLOPSTAR_KEY_PATH` (default `~/.config/flopstar/flopstar.pem`),
   close.
 - **All owner-key signing goes through `signer.PolicySigner`**, which whitelists rooms (`close1`,
   `d-flopstar-close1`), note namespaces (`room-owners`/`room-allow` for our room only) and message
-  types (`owner`, `room`, `trade`, `heartbeat`), and appends every signature to
+  types (`owner`, `room`, `trade`, `heartbeat`, `statement`), and appends every signature to
   `data/signatures.log`. Don't add signing paths that bypass it, and never print/log key material.
 - **Wire format** (`technocore.py`, `didkey.py`): records are `{"seq","ts","from","text","nonce","sig"}`;
   `sig` is unpadded base64url Ed25519 over `<room>|<nonce>|<text>`; notes sign

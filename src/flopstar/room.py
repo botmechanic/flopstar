@@ -1,11 +1,13 @@
-"""Own room d-flopstar-close1: claim, register, heartbeat, reclaim, status.
+"""Own room d-flopstar-close1: claim, register, heartbeat, reclaim, statement, status.
 
 Order matters: a d- room can be claimed only before its first message, so `claim` comes first.
 Rooms and notes with no write for 7 days are deleted, and a room on a single message goes after
 12 hours, so `heartbeat` runs at least every 6 hours and `reclaim` rewrites the owner note
-before day 6. Every signing command is a dry run unless --post is given.
+before day 6. `statement` names the 64 tree keys as Flopstar's, after the lock. Every signing
+command is a dry run unless --post is given.
 """
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -21,6 +23,8 @@ from .tree import TREE_SIZE
 
 ROOM = config.OWN_ROOM
 NOTE_CHARS = 8192   # technocore.chat's note limit
+MESSAGE_CHARS = 4096
+LOCK = datetime(2026, 10, 4, 9, 0, tzinfo=UTC)   # close-1's last sweep (2556)
 DID = re.compile(r"did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}")   # as the fold checks it
 
 
@@ -136,6 +140,32 @@ def heartbeat_text() -> str:
     return compact({"t": "heartbeat", "season": config.SEASON_ID, "at": at})
 
 
+def statement_text(dids: list[str]) -> str:
+    """Flopstar's claim to the tree keys; the record's `from` names the signer."""
+    text = compact({
+        "t": "statement", "season": config.SEASON_ID, "room": ROOM, "keys": dids,
+        "sha256": hashlib.sha256(" ".join(dids).encode()).hexdigest(),
+        "says": f"Flopstar operated these {len(dids)} keys as one key tree in close-1. "
+                "Flopstar's own key never traded.",
+    })
+    if len(text) > MESSAGE_CHARS:
+        raise SystemExit(f"statement is {len(text)} characters, over {MESSAGE_CHARS}")
+    return text
+
+
+async def post_statement(post: bool, now: datetime | None = None) -> None:
+    """The statement, checked against the live allow-list; --post refuses before the lock."""
+    dids = tree_allow_list()
+    async with TechnocoreClient() as client:
+        allow = await client.get_note("room-allow", ROOM)
+    if allow is None or allow.split() != dids:
+        raise SystemExit("tree-dids.txt does not match the room's allow-list; not signing")
+    if post and (now or datetime.now(UTC)) < LOCK:
+        raise SystemExit(f"the statement is posted after the lock ({LOCK:%Y-%m-%d %H:%M} UTC)")
+    await post_message(ROOM, statement_text(dids), post,
+                       str(config.get_data_dir() / "statement-close1.jsonl"))
+
+
 async def status() -> None:
     async with TechnocoreClient() as client:
         owner = await client.get_note("room-owners", ROOM)
@@ -172,9 +202,11 @@ async def run_room(args: list[str]) -> None:
         await write_allow_note(post)
     elif command == "heartbeat":
         await post_message(ROOM, heartbeat_text(), post, None)
+    elif command == "statement":
+        await post_statement(post)
     elif command == "status":
         await status()
     elif command == "verify":
         print(f"key loads and matches flopstar.did: {load_signer().did}")
     else:
-        raise SystemExit("usage: flopstar room [status|verify|claim|register|allow|heartbeat|reclaim] [--post]")
+        raise SystemExit("usage: flopstar room [status|verify|claim|register|allow|heartbeat|reclaim|statement] [--post]")

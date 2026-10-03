@@ -64,12 +64,12 @@ class PolicySigner:
     """
     The only way code should sign with an owner key. Enforces the signer policy:
     rooms close1 and our own room; notes room-owners / room-allow for our own room;
-    message types owner, room, trade, heartbeat. Every signature is logged (texts and
+    message types owner, room, trade, heartbeat, statement. Every signature is logged (texts and
     signatures are public once posted; key material never is).
     """
 
     NOTE_NAMESPACES = ("room-owners", "room-allow")
-    MESSAGE_TYPES = ("owner", "room", "trade", "heartbeat")
+    MESSAGE_TYPES = ("owner", "room", "trade", "heartbeat", "statement")
 
     def __init__(self, key: Ed25519PrivateKey, log_path: Path | None = None):
         self._key = key

@@ -251,7 +251,7 @@ it every 4 days (last: 22:29:38 on 25 Sep). Check `systemctl list-timers 'flopst
   only that the poster must be a registered key.
 - **Signer policy.** All owner-key signing goes through `PolicySigner`: rooms `close1` and
   `d-flopstar-close1`; notes `room-owners` and `room-allow` for our room; message types `owner`,
-  `room`, `trade` and `heartbeat`. Every signature is logged. Never print key material.
+  `room`, `trade`, `heartbeat` and `statement`. Every signature is logged. Never print key material.
 - **Never generate a replacement Flopstar key.**
 
 ---
@@ -339,7 +339,7 @@ vendor/close-call/ challenge package at 66c1da3. Never edit it.
 | `flopstar register [--post]` | yes | key + passphrase (done; repeating is harmless) |
 | `flopstar room status` | no | network |
 | `flopstar room verify` | no | key + passphrase |
-| `flopstar room claim/register/heartbeat/reclaim [--post]` | only with `--post` | key + passphrase |
+| `flopstar room claim/register/heartbeat/reclaim/statement [--post]` | only with `--post` | key + passphrase |
 | `flopstar room allow [--post]` | only with `--post` | `data/tree-dids.txt`; key + passphrase to post |
 | `flopstar tree init` | no | creates the seed; **refuses if one exists**. Never run it: the seed already exists, and a new one would be a different tree (rebuild from the offline backup, §3.10). |
 | `flopstar tree dids` | no | seed |
@@ -380,6 +380,9 @@ Checks: `uv run pytest -q` (25 tests), `uv run ruff check`, and `python3 vendor/
    232.08 (≥ 239.05 or ≤ 225.11) splits the 32 live keys to 16. Check the closes and reopens settle.
 2. **Alerts.** A tripped kill switch only logs and writes `data/KILL`; add a push notification.
 3. **After the lock:** Flopstar signs a statement listing all 64 tree DIDs, in its room and here.
+   `systemctl start flopstar-signer@statement` after 09:00 UTC on 4 Oct posts it (`room statement
+   --post` refuses before the lock and if `tree-dids.txt` differs from the live allow-list) and
+   saves the record to `data/statement-close1.jsonl`; then copy the record into `docs/STATEMENT.md`.
 
 ---
 
