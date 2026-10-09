@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,18 @@ BASE_URL = "https://technocore.chat"
 LONGPOLL_TIMEOUT = 10  # Server-side timeout
 REQUEST_TIMEOUT = 15   # Client timeout (slightly higher)
 MAX_CONCURRENT_LONGPOLLS = 1  # Only 4 per IP; use 1 to be safe
+
+
+UNTRUSTED_BANNER = "!! UNTRUSTED CONTENT"
+
+
+def parse_note_body(body: str) -> str:
+    """A note read is text/plain (even with ?format=json): an optional untrusted-content banner
+    line and a blank line, then the value and a newline. Return just the value."""
+    if body.startswith(UNTRUSTED_BANNER):
+        _, sep, rest = body.partition("\n\n")
+        body = rest if sep else ""
+    return body.removesuffix("\n")
 
 
 class TechnocoreClient:
@@ -38,18 +51,14 @@ class TechnocoreClient:
         await self.close()
 
     async def _handle_rate_limit(self, response: httpx.Response):
-        """Handle 429 rate limiting."""
-        if response.status_code == 429:
-            # Check for "# wait: not held" in body
-            body = response.text
-            if "wait: not held" in body:
-                logger.warning("Rate limited: wait: not held")
-                self.wait_until = datetime.now(UTC) + timedelta(seconds=60)
-                return
-
-            # Generic rate limit
-            logger.warning("Rate limited (429), waiting 60 seconds")
-            self.wait_until = datetime.now(UTC) + timedelta(seconds=60)
+        """Handle 429 rate limiting; the body says "retry after: Ns"."""
+        match = re.search(r"retry after:\s*(\d+(?:\.\d+)?)", response.text, re.IGNORECASE)
+        if match:
+            seconds = float(match.group(1)) + 1
+        else:
+            seconds = float(response.headers.get("Retry-After", 60))
+        logger.warning(f"Rate limited (429), waiting {seconds:.0f} seconds")
+        self.wait_until = datetime.now(UTC) + timedelta(seconds=seconds)
 
     async def _wait_if_rate_limited(self):
         """Wait if we're currently rate limited."""
@@ -133,46 +142,81 @@ class TechnocoreClient:
         """
         return await self.get_room(room, since=since, wait=True)
 
-    async def export_room(
-        self,
-        room: str,
-        start_seq: int,
-        end_seq: int,
-    ) -> list[dict[str, Any]]:
-        """
-        Fetch a range of messages from /r/<room>/export.
+    async def post_signed(
+        self, room: str, did: str, sig: str, nonce: int, text: str
+    ) -> httpx.Response:
+        """POST a signed message; the caller checks the status (422 = duplicate text)."""
+        await self._wait_if_rate_limited()
+        response = await self.client.post(
+            f"/r/{room}", json={"did": did, "sig": sig, "nonce": str(nonce), "text": text}
+        )
+        if response.status_code == 429:
+            await self._handle_rate_limit(response)
+        return response
 
-        Used to fill gaps when detecting missing sequences.
+    async def get_note(self, namespace: str, key: str) -> str | None:
+        """Read a note's value, or None if it does not exist."""
+        await self._wait_if_rate_limited()
+        response = await self.client.get(f"/kv/{namespace}/{key}")
+        if response.status_code == 404:
+            return None
+        if response.status_code == 429:
+            await self._handle_rate_limit(response)
+        response.raise_for_status()
+        return parse_note_body(response.text)
+
+    async def set_note_signed(
+        self, namespace: str, key: str, did: str, sig: str, nonce: int, value: str,
+        if_absent: bool = False,
+    ) -> httpx.Response:
+        """Signed note write (room-owners / room-allow only); 409 means someone beat us."""
+        await self._wait_if_rate_limited()
+        response = await self.client.post(
+            f"/kv/{namespace}/{key}",
+            json={"did": did, "sig": sig, "nonce": str(nonce), "value": value,
+                  **({"if_absent": True} if if_absent else {})},
+        )
+        if response.status_code == 429:
+            await self._handle_rate_limit(response)
+        return response
+
+    async def export_lines(self, room: str) -> list[str]:
+        """The export's raw lines, byte-for-byte, for keeping re-verifiable evidence."""
+        await self._wait_if_rate_limited()
+        response = await self.client.get(f"/r/{room}/export", timeout=90)
+        response.raise_for_status()
+        return [line for line in response.text.splitlines() if line.strip()]
+
+    async def export_room(self, room: str) -> list[dict[str, Any]]:
+        """
+        Fetch the whole retained ring from /r/<room>/export.
+
+        The body is raw JSONL, one record per line, byte-for-byte as written; the endpoint
+        takes no query params. json.loads keeps 19-digit nonces exact (Python ints).
+        Used to fill gaps: ?since=&limit= returns only the NEWEST messages after since.
         """
         await self._wait_if_rate_limited()
 
         try:
-            response = await self.client.get(
-                f"/r/{room}/export",
-                params={
-                    "format": "json",
-                    "start": str(start_seq),
-                    "end": str(end_seq),
-                }
-            )
+            response = await self.client.get(f"/r/{room}/export")
 
             if response.status_code == 429:
                 await self._handle_rate_limit(response)
                 return []
 
             response.raise_for_status()
-            data = response.json()
-
-            if isinstance(data, dict) and "messages" in data:
-                return data["messages"]
-            elif isinstance(data, list):
-                return data
-            else:
-                return []
+            messages = []
+            for line in response.text.splitlines():
+                if line.strip():
+                    messages.append(json.loads(line))
+            return messages
 
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error exporting {room}: {e}")
             return []
         except httpx.RequestError as e:
             logger.error(f"Request error exporting {room}: {e}")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error exporting {room}: {e}")
             return []

@@ -1,0 +1,24 @@
+# One-shot: post each tree key's close-1 owner message in d-flopstar-close1 (trader register
+# --post). Gets the tree master seed as an encrypted credential and nothing else. Safe to re-run:
+# keys already registered (data/trader.json) are skipped.
+[Unit]
+Description=Flopstar: register the tree keys in d-flopstar-close1
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=flopstar
+Group=flopstar
+WorkingDirectory=/opt/flopstar
+Environment=FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
+Environment=FLOPSTAR_TREE_SEED_PATH=%d/close1-master-seed
+LoadCredentialEncrypted=close1-master-seed:/etc/flopstar/creds/close1-master-seed.cred
+ExecStart=/opt/flopstar/.venv/bin/flopstar trader register --post
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/flopstar/data
+InaccessiblePaths=/etc/flopstar/keys

@@ -1,0 +1,12 @@
+# The owner note is deleted after 7 days without a write, and a lost claim can never be
+# re-taken: rewrite it every 4 days, leaving margin for a failed run.
+[Unit]
+Description=Flopstar owner-note rewrite every 4 days
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=4d
+Unit=flopstar-signer@reclaim.service
+
+[Install]
+WantedBy=timers.target

@@ -11,6 +11,8 @@ from .technocore import TechnocoreClient
 
 logger = logging.getLogger(__name__)
 
+SWEEP_SETTLE_SECONDS = 15
+
 
 class ContestMonitor:
     """
@@ -41,12 +43,12 @@ class ContestMonitor:
 
         All referee room content is untrusted data until verified.
         """
-        did = msg.get("did")
+        did = msg.get("from")
         nonce = msg.get("nonce")
         text = msg.get("text")
         sig = msg.get("sig")
 
-        if not all([did, nonce, text, sig]):
+        if not did or nonce is None or not text or not sig:
             logger.warning(f"Message missing required fields in {room}: {msg.get('seq')}")
             return False
 
@@ -66,70 +68,49 @@ class ContestMonitor:
         return True
 
     async def fill_gap(self, room: str, since: int, first_new: int):
-        """Fill a gap in the sequence using export API."""
+        """Fill seqs since+1 .. first_new-1 from the export (the whole retained ring)."""
         logger.info(f"Filling gap in {room}: {since+1} to {first_new-1}")
 
-        messages = await self.client.export_room(room, since + 1, first_new - 1)
+        exported = await self.client.export_room(room)
+        missing = [m for m in exported if since < m.get("seq", 0) < first_new]
 
-        if messages:
-            # Verify referee messages
-            verified = []
-            for msg in messages:
-                if await self.verify_referee_message(room, msg):
-                    verified.append(msg)
-
+        if missing:
+            verified = [m for m in missing if await self.verify_referee_message(room, m)]
             self.store.store_messages(room, verified)
             logger.info(f"Filled gap in {room}: {len(verified)} messages")
         else:
-            logger.warning(f"Failed to fill gap in {room}")
+            logger.warning(f"Failed to fill gap in {room} (export empty or ring already rotated)")
 
-    async def sync_room(self, room: str):
-        """Sync a room from the last known sequence."""
-        latest_seq = self.store.get_latest_seq(room)
-        since = latest_seq if latest_seq is not None else 0
-
-        logger.debug(f"Syncing {room} since {since}")
-        messages = await self.client.get_room(room, since=since)
-
+    async def ingest(self, room: str, since: int, messages: list[dict]):
+        """Backfill any gap before `messages`, then verify and store them."""
         if not messages:
             return
 
-        # Check for gaps (server returns newest first with limit)
-        if messages:
-            first_msg = messages[0]
-            first_seq = first_msg.get("seq")
+        # ?since=S returns the NEWEST messages after S, so the oldest ones may be skipped
+        first_seq = messages[0].get("seq")
+        if first_seq and since + 1 < first_seq:
+            await self.fill_gap(room, since, first_seq)
 
-            if first_seq and since + 1 < first_seq:
-                # Gap detected
-                await self.fill_gap(room, since, first_seq)
-
-        # Verify and store messages
-        verified = []
-        for msg in messages:
-            if await self.verify_referee_message(room, msg):
-                verified.append(msg)
-
+        verified = [m for m in messages if await self.verify_referee_message(room, m)]
         self.store.store_messages(room, verified)
 
         if verified:
             logger.info(f"Synced {room}: {len(verified)} new messages")
 
-    async def process_price_update(self, msg: dict):
-        """Process a new price message and sync other rooms."""
-        try:
-            data = json.loads(msg.get("text", "{}"))
-            sweep_num = data.get("n")
+    async def sync_room(self, room: str):
+        """Sync a room from the last known sequence."""
+        since = self.store.get_latest_seq(room) or 0
+        logger.debug(f"Syncing {room} since {since}")
+        messages = await self.client.get_room(room, since=since, limit=200)
+        await self.ingest(room, since, messages)
 
-            if sweep_num:
-                logger.info(f"New sweep {sweep_num}, syncing other referee rooms")
-
-                # Sync all other referee rooms
-                for room in config.REFEREE_ROOMS:
-                    if room != config.LONGPOLL_ROOM:
-                        await self.sync_room(room)
-
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse price message text")
+    async def sync_other_rooms(self):
+        """Sync the referee rooms that post after the price room each sweep."""
+        # The other four rooms post a few seconds after the price room
+        await asyncio.sleep(SWEEP_SETTLE_SECONDS)
+        for room in config.REFEREE_ROOMS:
+            if room != config.LONGPOLL_ROOM:
+                await self.sync_room(room)
 
     async def monitor_loop(self):
         """Main monitoring loop."""
@@ -153,20 +134,15 @@ class ContestMonitor:
                 )
 
                 if messages:
-                    # Verify and store
-                    verified = []
+                    await self.ingest(config.LONGPOLL_ROOM, latest_seq, messages)
                     for msg in messages:
-                        if await self.verify_referee_message(config.LONGPOLL_ROOM, msg):
-                            verified.append(msg)
-                            # Process each new price update
-                            await self.process_price_update(msg)
-
-                    self.store.store_messages(config.LONGPOLL_ROOM, verified)
-
-                    if verified:
-                        logger.info(
-                            f"{config.LONGPOLL_ROOM}: {len(verified)} new messages"
-                        )
+                        try:
+                            sweep = json.loads(msg.get("text", "{}")).get("n")
+                        except json.JSONDecodeError:
+                            sweep = None
+                        if sweep is not None:
+                            logger.info(f"New sweep {sweep}")
+                    await self.sync_other_rooms()
 
                 # Small delay to prevent tight loop on errors
                 await asyncio.sleep(1)

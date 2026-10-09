@@ -1,0 +1,11 @@
+# The room must keep >1 message and some write every 7 days: heartbeat every 6 hours.
+[Unit]
+Description=Flopstar room heartbeat every 6 hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Unit=flopstar-signer@heartbeat.service
+
+[Install]
+WantedBy=timers.target

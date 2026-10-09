@@ -1,0 +1,25 @@
+# One-shot signed action for d-flopstar-close1, e.g. flopstar-signer@heartbeat.
+# The passphrase arrives only as an encrypted credential, decrypted by systemd into a
+# private tmpfs ($CREDENTIALS_DIRECTORY, %d) visible to this unit alone.
+[Unit]
+Description=Flopstar signed room action: %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=flopstar
+Group=flopstar
+WorkingDirectory=/opt/flopstar
+Environment=FLOPSTAR_DATA_DIR=/var/lib/flopstar/data
+Environment=FLOPSTAR_KEY_PATH=/etc/flopstar/keys/flopstar.pem
+Environment=FLOPSTAR_PASSPHRASE_FILE=%d/flopstar-passphrase
+LoadCredentialEncrypted=flopstar-passphrase:/etc/flopstar/creds/flopstar-passphrase.cred
+ExecStart=/opt/flopstar/.venv/bin/flopstar room %i --post
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/flopstar/data
+ReadOnlyPaths=/etc/flopstar/keys

@@ -9,7 +9,9 @@ Flopstar is a Python agent for participating in the FLOP Labs "Close Call" tradi
 This implementation includes:
 - **Phase 1 (Complete)**: Security hygiene - private key isolation, .gitignore, pre-commit hooks
 - **Phase 2 (Complete)**: Project setup with vendored challenge code
-- **Phase 3 (Current)**: Read-only monitor for contest data
+- **Phase 3 (Complete)**: Read-only monitor for contest data
+- **Phase 4 (Live since 25 Sep 2026)**: Own room `d-flopstar-close1` and a 64-key tree trader,
+  running on a dedicated droplet. Current state: [docs/HANDOFF.md](docs/HANDOFF.md)
 
 ## Security First
 
@@ -84,21 +86,35 @@ Messages are stored in `./data/flopstar.db` (configurable via `FLOPSTAR_DATA_DIR
 The monitor respects technocore.chat's limits:
 - Only 4 concurrent long-polls per IP allowed
 - We use 1 long-poll (on `d-close1-price`)
-- Handles 429 responses and "wait: not held" messages
-- Automatically backs off for 60s when rate limited
+- Handles 429 responses, backing off for the "retry after" the body names
+
+## Running the Trader
+
+The tree trader (design and results in [docs/TREE.md](docs/TREE.md)) trades with 64 keys
+derived from a master seed; the Flopstar key itself never trades.
+
+```bash
+uv run flopstar trader run               # paper mode: throwaway keys, signs and posts nothing
+uv run flopstar trader status            # paper state and the tree's best scores
+uv run flopstar trader run --live        # the real tree keys (needs FLOPSTAR_TREE_SEED_PATH)
+```
+
+Each sweep it rebuilds a shadow fold of our keys through the vendored fold, checks it against
+the referee's posts, and steps the tree once inside a safe posting window. Any void, missed read
+or mismatch writes `data/KILL`, after which it signs nothing until the file is removed. On the
+droplet it runs as `flopstar-trader.service` (live) and `flopstar-trader-paper.service`.
 
 ## Investigation: Flow Room Data
 
 **Question**: Do `d-close1-flow` posts list per-trade-id outcomes (settled/void + reason), or only counts?
 
-**Answer**: **Only counts**. The flow room posts contain:
+**Answer** (revised against live posts): per-trade `[id, reason]` lists, but **truncated**:
 ```json
-{"t":"flow","n":1234,"mints":[…],"rooms":[…],"settled":"42","void":"17","missed":[…],"file":"<hash>"}
+{"t":"flow","n":32,"mints":[],"rooms":[…],"settled":[],"void":[["2ff3e772","funds"],…],"missed":[],"omitted":{"mints":19414,"settled":1237,"void":6},"file":"<hash>"}
 ```
 
-The `settled` and `void` fields are counts only. Per-trade outcomes with reasons are in the **flow file** referenced by the hash, not in the room post.
-
-**Implication**: Full-ledger replay is blocked (flow files not downloadable, issue #6). Agents would need to track all trades from trading rooms to replay with the fold.
+The full per-sweep record is in the **flow file** referenced by the hash, which is not downloadable
+(issue #6), so full-ledger replay is still blocked.
 
 ## Architecture
 
@@ -106,12 +122,25 @@ The `settled` and `void` fields are counts only. Per-trade outcomes with reasons
 src/flopstar/
 ├── __init__.py       - Package metadata
 ├── cli.py            - Command-line entry point
-├── config.py         - Contest configuration and paths
+├── config.py         - Referee DID, rooms, own room, paths
 ├── didkey.py         - DID:key ↔ Ed25519 conversion, signature verification
-├── monitor.py        - Read-only monitor loop
+├── technocore.py     - technocore.chat client: reads, long-poll, export, signed posts and notes
 ├── store.py          - Append-only SQLite message store
-└── technocore.py     - technocore.chat API client
+├── monitor.py        - Read-only referee monitor loop
+├── signer.py         - Encrypted key loading, DID derivation, PolicySigner
+├── register.py       - Flopstar's close-1 owner registration
+├── room.py           - Own room: status | verify | claim | register | allow | heartbeat | reclaim
+├── evidence.py       - Saves our exact signed records from the room export
+├── tree.py           - Key tree: HKDF derivation, sizing, round/split engine
+├── dryrun.py         - Tree run against the vendored fold over simulated paths
+├── treecli.py        - Tree commands: init | dids | dryrun
+├── treesigner.py     - Tree-key signing, policy-checked and logged
+├── hyperliquid.py    - Latest xyz:NVDA trade, for pricing the tree's trades
+└── trader.py         - Tree trader: shadow fold, referee reconciliation, posting, kill switch
 ```
+
+Other directories: `deploy/` (systemd units and timers), `docs/` (`HANDOFF.md` for current state
+and next steps, `TREE.md` for the key tree design) and `vendor/close-call/` (the challenge package).
 
 ### Key Design Decisions
 
@@ -120,6 +149,11 @@ src/flopstar/
 3. **Gap detection**: Automatically fills sequence gaps using export API
 4. **Single long-poll**: Only `d-close1-price` uses long-polling to stay under 4 concurrent limit
 5. **Exact decimal arithmetic**: Uses vendored fold (no rounding until output)
+6. **Policy-gated signing**: All owner-key signatures go through `PolicySigner`, which allows only
+   known rooms, notes and message types and logs every signature to `data/signatures.log`
+7. **Flat main key**: The Flopstar key holds the identity and owns the room but never trades;
+   trading is done by a 64-key tree (`docs/TREE.md`), whose keys sign only through `TreeSigner`
+8. **Dry run by default**: Signing commands only post with `--post`; the trader only with `--live`
 
 ## Vendored Code
 
@@ -167,13 +201,11 @@ rm test.txt
 
 ### Deployment
 
-When deploying to a server:
-1. **Copy the key separately** (not via git): `scp ~/.config/flopstar/flopstar.pem user@server:/etc/flopstar/keys/`
-2. Set permissions: `chmod 600 /etc/flopstar/keys/flopstar.pem`
-3. Clone the code repository
-4. Update `FLOPSTAR_KEY_PATH` in `.env`
+Flopstar runs on a dedicated droplet under systemd, as a non-root `flopstar` user. The key
+passphrase and the tree seed exist there only as systemd encrypted credentials. The full runbook,
+the unit list and how to deploy a change are in [docs/HANDOFF.md](docs/HANDOFF.md) (§3 and §7).
 
-Never transport the key through git, Slack, email, or logs.
+Never transport the key or the seed through git, Slack, email, or logs.
 
 ## License
 
@@ -190,7 +222,7 @@ See LICENSE and NOTICE files. The vendored challenge code retains its original l
 
 Referee rooms:
 - `d-close1-price` - Reference prices and limits
-- `d-close1-flow` - Trade outcomes (counts only)
+- `d-close1-flow` - Mints, rooms, trade outcomes (truncated lists + `omitted` counts)
 - `d-close1-positions` - Open interest
 - `d-close1-pnl` - PnL and leaderboard
 - `d-close1-state` - State roots
