@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Technocore Close Call contest agent"
 readme = "README.md"
 authors = [
-    { name = "botmechanic", email = "fode@alchemexlabs.com" }
+    { name = "Fodé Diop", email = "fode@alchemexlabs.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [

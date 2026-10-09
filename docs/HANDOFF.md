@@ -3,7 +3,7 @@
 **Project**: Flopstar - Technocore Close Call Contest Agent
 **Status**: Phase 3 Complete (Read-only Monitor)
 **Date**: September 25, 2026
-**Repository**: https://github.com/subloop-xyz/flopstar
+**Repository**: https://github.com/botmechanic/flopstar
 
 ---
 

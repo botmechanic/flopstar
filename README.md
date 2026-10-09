@@ -32,7 +32,7 @@ Security measures:
 
 ```bash
 # Clone the repository
-git clone https://github.com/subloop-xyz/flopstar.git
+git clone https://github.com/botmechanic/flopstar.git
 cd flopstar
 
 # Install dependencies
@@ -196,6 +196,12 @@ Referee rooms:
 - `d-close1-state` - State roots
 
 Trading room: `close1`
+
+## Author
+
+**Fodé Diop** - [@botmechanic](https://github.com/botmechanic)
+
+Contribution to the FLOP network community.
 
 ## References
 
